@@ -11,10 +11,10 @@ from typing import Any, Dict, TYPE_CHECKING
 import pandas as pd
 import numpy as np
 
-from factor_hub.factors import BaseFactor, FactorMeta, factor_registry
+from quantclassic.factor_hub.factors import BaseFactor, FactorMeta, factor_registry
 
 if TYPE_CHECKING:
-    from factor_hub.protocols import StandardDataProtocol
+    from quantclassic.factor_hub.protocols import StandardDataProtocol
 
 
 @factor_registry.register

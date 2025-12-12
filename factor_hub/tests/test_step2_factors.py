@@ -8,13 +8,17 @@ Step 2 验证脚本 - 验证因子基类与注册机制
 """
 
 import sys
-sys.path.insert(0, "/home/u2025210237/jupyterlab/quantclassic")
+import os
+
+# 添加项目根目录到 Python 路径
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+sys.path.insert(0, project_root)
 
 # 导入 demo_factors 模块以触发装饰器注册
-from factor_hub.factors import demo_factors  # noqa
-from factor_hub.factors import factor_registry, BaseFactor
-from factor_hub.providers.mock_provider import MockDataProvider
-from factor_hub.protocols import StandardDataProtocol
+from quantclassic.factor_hub.factors import demo_factors  # noqa
+from quantclassic.factor_hub.factors import factor_registry, BaseFactor
+from quantclassic.factor_hub.providers.mock_provider import MockDataProvider
+from quantclassic.factor_hub.protocols import StandardDataProtocol
 
 
 def main():

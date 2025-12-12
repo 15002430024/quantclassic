@@ -2,7 +2,7 @@
 Factor IO Module - 因子结果输出模块
 """
 
-from factor_hub.io.writers import (
+from quantclassic.factor_hub.io.writers import (
     IFactorWriter,
     CSVWriter,
     ParquetWriter,

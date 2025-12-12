@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Type, TYPE_CHECKING
 import pandas as pd
 
 if TYPE_CHECKING:
-    from factor_hub.protocols import StandardDataProtocol
+    from quantclassic.factor_hub.protocols import StandardDataProtocol
 
 
 @dataclass

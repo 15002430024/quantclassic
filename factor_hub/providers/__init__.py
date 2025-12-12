@@ -14,7 +14,7 @@ from typing import List, Optional, Union, TYPE_CHECKING
 import pandas as pd
 
 if TYPE_CHECKING:
-    from factor_hub.protocols import StandardDataProtocol
+    from quantclassic.factor_hub.protocols import StandardDataProtocol
 
 
 class IDataProvider(ABC):
