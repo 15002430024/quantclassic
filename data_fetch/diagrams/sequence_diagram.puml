@@ -1,0 +1,223 @@
+@startuml data_loader_sequence_diagram
+
+!define LIGHTBLUE #E6F3FF
+!define LIGHTGREEN #E8F5E9
+!define LIGHTYELLOW #FFFACD
+!define LIGHTPURPLE #F3E5F5
+
+title 量化数据获取工具 - 完整流程序列图
+
+actor User as user
+participant "QuantDataPipeline" as pipeline
+participant "ConfigManager" as config
+participant "DataFetcher" as fetcher
+participant "DataProcessor" as processor
+participant "DataValidator" as validator
+participant "RiceQuant API" as api
+database "File System" as fs
+
+== 1. 初始化阶段 ==
+
+user -> pipeline: QuantDataPipeline(config_path)
+activate pipeline
+
+pipeline -> config: ConfigManager(config_path)
+activate config
+config -> config: load_from_yaml()
+config -> config: validate_all()
+config --> pipeline: config instance
+deactivate config
+
+pipeline -> fetcher: DataFetcher(config)
+activate fetcher
+fetcher -> api: rqdatac.init()
+api --> fetcher: API connected
+fetcher --> pipeline: fetcher instance
+deactivate fetcher
+
+pipeline -> processor: DataProcessor(config)
+activate processor
+processor --> pipeline: processor instance
+deactivate processor
+
+pipeline -> validator: DataValidator(config)
+activate validator
+validator --> pipeline: validator instance
+deactivate validator
+
+pipeline --> user: pipeline instance
+deactivate pipeline
+
+== 2. 获取基础数据阶段 ==
+
+user -> pipeline: run_full_pipeline()
+activate pipeline
+
+pipeline -> pipeline: _fetch_basic_data()
+activate pipeline
+
+pipeline -> fetcher: get_stock_list()
+activate fetcher
+fetcher -> api: get index components
+api --> fetcher: stock list
+fetcher -> api: all_instruments()
+api --> fetcher: stock details
+fetcher -> fetcher: _apply_filters()
+fetcher --> pipeline: df_stocks
+deactivate fetcher
+
+pipeline -> fetcher: get_trading_calendar()
+activate fetcher
+fetcher -> api: get_trading_dates()
+api --> fetcher: trading dates
+fetcher --> pipeline: df_calendar
+deactivate fetcher
+
+pipeline -> fetcher: get_industry_data()
+activate fetcher
+fetcher -> api: get_instrument_industry()
+api --> fetcher: industry data
+fetcher --> pipeline: df_industry
+deactivate fetcher
+
+pipeline -> fs: save basic data
+fs --> pipeline: saved
+
+deactivate pipeline
+
+== 3. 获取日频数据阶段 ==
+
+pipeline -> pipeline: _fetch_daily_data()
+activate pipeline
+
+loop for each batch
+    pipeline -> fetcher: get_price_data(batch)
+    activate fetcher
+    fetcher -> api: get_price()
+    api --> fetcher: price data
+    fetcher --> pipeline: df_price_batch
+    deactivate fetcher
+end
+
+loop for each batch
+    pipeline -> fetcher: get_valuation_data(batch)
+    activate fetcher
+    fetcher -> api: get_factor()
+    api --> fetcher: valuation data
+    fetcher --> pipeline: df_valuation_batch
+    deactivate fetcher
+end
+
+loop for each batch
+    pipeline -> fetcher: get_share_data(batch)
+    activate fetcher
+    fetcher -> api: get_factor()
+    api --> fetcher: share data
+    fetcher --> pipeline: df_share_batch
+    deactivate fetcher
+end
+
+pipeline -> fs: save daily data
+fs --> pipeline: saved
+
+deactivate pipeline
+
+== 4. 数据处理阶段 ==
+
+pipeline -> pipeline: _merge_data()
+activate pipeline
+
+pipeline -> processor: merge_daily_data(df_price, df_valuation, df_share)
+activate processor
+processor -> processor: clean_raw_data()
+processor -> processor: pd.merge()
+processor --> pipeline: df_merged
+deactivate processor
+
+pipeline -> processor: calculate_basic_fields(df_merged)
+activate processor
+processor -> processor: calculate pct_chg, amplitude, etc.
+processor --> pipeline: df_with_basic
+deactivate processor
+
+deactivate pipeline
+
+== 5. 特征工程阶段 ==
+
+pipeline -> pipeline: _build_features()
+activate pipeline
+
+pipeline -> processor: build_features(df)
+activate processor
+
+processor -> processor: calculate_technical_indicators()
+note right: 计算收益率、波动率、均线
+
+processor -> processor: calculate_lag_features()
+note right: 计算滞后特征(防数据泄漏)
+
+processor -> processor: create_derived_features()
+note right: 创建衍生特征
+
+processor --> pipeline: df_features
+deactivate processor
+
+deactivate pipeline
+
+== 6. 数据验证阶段 ==
+
+pipeline -> pipeline: _validate_data()
+activate pipeline
+
+pipeline -> validator: run_full_validation(df_features)
+activate validator
+
+validator -> validator: validate_data_integrity()
+note right: 检查缺失值、重复行
+
+validator -> validator: check_data_leakage()
+note right: 验证滞后特征正确性
+
+validator -> validator: check_data_consistency()
+note right: 检查价格逻辑一致性
+
+validator -> validator: sample_verification()
+note right: 抽样验证
+
+validator -> validator: generate_quality_report()
+validator --> pipeline: quality_report
+deactivate validator
+
+pipeline -> fs: save quality report
+fs --> pipeline: saved
+
+deactivate pipeline
+
+== 7. 保存结果阶段 ==
+
+pipeline -> pipeline: _save_final_data()
+activate pipeline
+
+pipeline -> fs: save features_raw.parquet
+fs --> pipeline: saved
+
+pipeline -> fs: save feature_columns.txt
+fs --> pipeline: saved
+
+deactivate pipeline
+
+pipeline --> user: df_features
+deactivate pipeline
+
+note over user, fs
+  <b>完整流程完成</b>
+  
+  输出文件:
+  • rq_data_parquet/features_raw.parquet
+  • rq_data_parquet/feature_columns.txt
+  • rq_data_parquet/data_quality_report.txt
+  • rq_data_parquet/basic_data/*.parquet
+  • rq_data_parquet/daily_data/*.parquet
+end note
+
+@enduml

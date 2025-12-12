@@ -1,0 +1,237 @@
+@startuml data_loader_class_diagram
+
+!define LIGHTORANGE #FFE4B5
+!define LIGHTBLUE #E6F3FF
+!define LIGHTGREEN #E8F5E9
+!define LIGHTPURPLE #F3E5F5
+!define LIGHTYELLOW #FFFACD
+
+' 标题
+title 量化数据获取工具 - 类图
+
+' 配置管理模块
+package "配置管理 (config_manager.py)" LIGHTYELLOW {
+    class ConfigManager {
+        +time: TimeConfig
+        +data_source: DataSourceConfig
+        +universe: UniverseConfig
+        +fields: DataFieldsConfig
+        +storage: StorageConfig
+        +process: ProcessConfig
+        +feature: FeatureConfig
+        --
+        +__init__(config_path)
+        +load_from_yaml(config_path)
+        +save_to_yaml(save_path)
+        +validate_all()
+        +to_dict(): Dict
+    }
+    
+    class TimeConfig {
+        +start_date: str
+        +end_date: str
+        +frequency: str
+        --
+        +validate()
+    }
+    
+    class DataSourceConfig {
+        +source: str
+        +market: str
+        +auth_method: str
+        --
+        +validate()
+    }
+    
+    class UniverseConfig {
+        +universe_type: str
+        +custom_stocks: List[str]
+        +filters: List[str]
+        +exclude_st: bool
+        --
+        +validate()
+    }
+    
+    class DataFieldsConfig {
+        +price_fields: List[str]
+        +valuation_fields: List[str]
+        +share_fields: List[str]
+        +industry_source: str
+        +industry_level: int
+    }
+    
+    class StorageConfig {
+        +save_dir: str
+        +file_format: str
+        +compression: str
+        +basic_data_dir: str
+        +daily_data_dir: str
+        --
+        +get_full_path(subdir, filename): str
+        +ensure_dirs()
+    }
+    
+    class ProcessConfig {
+        +batch_size: int
+        +retry_times: int
+        +sleep_interval: float
+        +timeout: int
+        +use_multiprocessing: bool
+        +max_workers: int
+    }
+    
+    class FeatureConfig {
+        +technical_indicators: List[str]
+        +lag_periods: List[int]
+        +ma_windows: List[int]
+        +return_periods: List[int]
+        +volatility_window: int
+    }
+}
+
+' 数据获取模块
+package "数据获取 (data_fetcher.py)" LIGHTBLUE {
+    class DataFetcher {
+        -config: ConfigManager
+        --
+        +__init__(config)
+        +get_stock_list(): DataFrame
+        +get_trading_calendar(): DataFrame
+        +get_industry_data(order_book_ids): DataFrame
+        +get_price_data(order_book_ids): DataFrame
+        +get_valuation_data(order_book_ids): DataFrame
+        +get_share_data(order_book_ids): DataFrame
+        +save_data(df, subdir, filename)
+        --
+        -_init_api()
+        -_get_index_components(index_type, date): DataFrame
+        -_get_all_a_stocks(date): DataFrame
+        -_apply_filters(df): DataFrame
+        -_batch_fetch_data(order_book_ids, fetch_func, desc): DataFrame
+        -_fetch_price_batch(batch_stocks): DataFrame
+        -_fetch_valuation_batch(batch_stocks): DataFrame
+        -_fetch_share_batch(batch_stocks): DataFrame
+    }
+}
+
+' 数据处理模块
+package "数据处理 (data_processor.py)" LIGHTGREEN {
+    class DataProcessor {
+        -config: ConfigManager
+        --
+        +__init__(config)
+        +clean_raw_data(df): DataFrame
+        +fix_column_order(df): DataFrame
+        +merge_daily_data(df_price, df_valuation, df_share): DataFrame
+        +calculate_basic_fields(df): DataFrame
+        +calculate_technical_indicators(df): DataFrame
+        +calculate_lag_features(df): DataFrame
+        +create_derived_features(df): DataFrame
+        +build_features(df): DataFrame
+        +handle_missing_values(df, method): DataFrame
+        +remove_outliers(df, columns, std_threshold): DataFrame
+        +get_feature_names(df): Dict
+    }
+}
+
+' 数据验证模块
+package "数据验证 (data_validator.py)" LIGHTPURPLE {
+    class DataValidator {
+        -config: ConfigManager
+        -validation_results: Dict
+        --
+        +__init__(config)
+        +validate_data_integrity(df): Dict
+        +check_data_leakage(df): Dict
+        +sample_verification(df, stock_code, n_rows): DataFrame
+        +generate_quality_report(): Dict
+        +validate_feature_distribution(df, feature_cols): Dict
+        +check_data_consistency(df): Dict
+        +run_full_validation(df): Dict
+    }
+}
+
+' 主流水线模块
+package "主流水线 (pipeline.py)" LIGHTORANGE {
+    class QuantDataPipeline {
+        -config: ConfigManager
+        -fetcher: DataFetcher
+        -processor: DataProcessor
+        -validator: DataValidator
+        -data: Dict
+        --
+        +__init__(config, config_path)
+        +run_full_pipeline(steps, save_intermediate, validate): DataFrame
+        +run_incremental_update(update_date)
+        +run_custom_universe(custom_stocks)
+        +load_existing_data(): DataFrame
+        +get_data_summary(): Dict
+        --
+        -_fetch_basic_data(save)
+        -_fetch_daily_data(save)
+        -_merge_data()
+        -_build_features()
+        -_validate_data()
+        -_save_final_data()
+    }
+}
+
+' 关系定义
+ConfigManager "1" *-- "1" TimeConfig
+ConfigManager "1" *-- "1" DataSourceConfig
+ConfigManager "1" *-- "1" UniverseConfig
+ConfigManager "1" *-- "1" DataFieldsConfig
+ConfigManager "1" *-- "1" StorageConfig
+ConfigManager "1" *-- "1" ProcessConfig
+ConfigManager "1" *-- "1" FeatureConfig
+
+QuantDataPipeline "1" o-- "1" ConfigManager : 使用
+QuantDataPipeline "1" *-- "1" DataFetcher : 组合
+QuantDataPipeline "1" *-- "1" DataProcessor : 组合
+QuantDataPipeline "1" *-- "1" DataValidator : 组合
+
+DataFetcher "1" --> "1" ConfigManager : 依赖
+DataProcessor "1" --> "1" ConfigManager : 依赖
+DataValidator "1" --> "1" ConfigManager : 依赖
+
+note right of QuantDataPipeline
+  <b>主入口类</b>
+  
+  整合所有模块
+  提供统一接口
+  管理执行流程
+end note
+
+note right of ConfigManager
+  <b>配置管理</b>
+  
+  集中管理所有参数
+  支持YAML配置文件
+  参数验证机制
+end note
+
+note right of DataFetcher
+  <b>数据获取</b>
+  
+  批处理优化
+  自动重试机制
+  API限流处理
+end note
+
+note right of DataProcessor
+  <b>数据处理</b>
+  
+  数据清洗
+  特征工程
+  技术指标计算
+end note
+
+note right of DataValidator
+  <b>数据验证</b>
+  
+  完整性检查
+  数据泄漏检查
+  质量报告生成
+end note
+
+@enduml

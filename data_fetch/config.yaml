@@ -1,0 +1,126 @@
+# 量化数据获取配置文件
+
+# ==================== 时间配置 ====================
+time_settings:
+  start_date: "2015-01-01"  # 数据开始日期
+  end_date: "2024-12-31"     # 数据结束日期
+  frequency: "1d"             # 数据频率: 1d-日频, 1w-周频, 1m-月频
+
+# ==================== 数据源配置 ====================
+data_source:
+  source: "rq"               # 数据源: rq-米筐, clickhouse-ClickHouse, tushare-Tushare
+  market: "cn"               # 市场: cn-中国, us-美国
+  auth_method: "config_file" # 认证方式
+  
+  # ClickHouse 数据源配置 (当 source='clickhouse' 时使用)
+  clickhouse_config:
+    host: "10.13.66.5"       # ClickHouse 主机地址
+    port: 20108              # ClickHouse 端口
+    user: "etf_visitor"      # 用户名
+    password: "etf_lh_2025"  # 密码
+    database: "etf"          # 数据库名
+
+# ==================== 股票池配置 ====================
+universe:
+  universe_type: "csi800"    # 股票池类型: csi800, csi300, csi500, all_a, custom
+  custom_stocks: null        # 自定义股票列表(仅当universe_type=custom时使用)
+    # 例如: ['000001.XSHE', '600000.XSHG']
+  
+  # 筛选规则
+  filters:
+    - "exclude_st"           # 排除ST股票
+    - "main_board_only"      # 仅主板(可选)
+  
+  exclude_st: true           # 是否排除ST股票
+  main_board_only: false     # 是否仅保留主板股票
+  min_list_days: 0           # 最小上市天数要求
+
+# ==================== 数据字段配置 ====================
+fields:
+  # 行情数据字段
+  price_fields:
+    - "open"                 # 开盘价
+    - "high"                 # 最高价
+    - "low"                  # 最低价
+    - "close"                # 收盘价
+    - "volume"               # 成交量
+    - "total_turnover"       # 成交额
+    - "limit_up"             # 涨停价
+    - "limit_down"           # 跌停价
+    - "num_trades"           # 成交笔数
+  
+  # 估值数据字段
+  valuation_fields:
+    - "pe_ratio"             # 市盈率(静态)
+    - "pe_ratio_ttm"         # 市盈率(TTM)
+    - "pb_ratio"             # 市净率
+    - "ps_ratio"             # 市销率(静态)
+    - "ps_ratio_ttm"         # 市销率(TTM)
+    - "market_cap"           # 总市值
+    - "a_share_market_val_in_circulation"  # 流通市值
+  
+  # 股本数据字段
+  share_fields:
+    - "total_shares"         # 总股本
+    - "shares_outstanding"   # 流通股本
+    - "float_a_share_quantity"  # A股流通股本
+  
+  # 行业分类
+  industry_source: "sws"     # 行业分类标准: sws-申万, citics-中信, zjh-证监会
+  industry_level: 1          # 行业分类级别: 1-一级行业, 2-二级行业
+
+# ==================== 存储配置 ====================
+storage:
+  save_dir: "rq_data_parquet"  # 数据保存目录
+  file_format: "parquet"       # 文件格式: parquet, csv, hdf5
+  compression: null            # 压缩格式: gzip, snappy, null(不压缩)
+  
+  # 子目录结构
+  basic_data_dir: "basic_data"  # 基础数据子目录
+  daily_data_dir: "daily_data"  # 日频数据子目录
+
+# ==================== 处理流程配置 ====================
+process:
+  batch_size: 500            # 批处理大小(每次获取多少只股票)
+  retry_times: 3             # API失败重试次数
+  sleep_interval: 0.1        # 请求间隔(秒)
+  timeout: 30                # 超时时间(秒)
+  
+  # 并行处理(暂未实现)
+  use_multiprocessing: false
+  max_workers: 4
+
+# ==================== 特征工程配置 ====================
+features:
+  # 技术指标开关
+  technical_indicators:
+    - "sma"                  # 移动平均
+    - "volatility"           # 波动率
+    - "momentum"             # 动量
+    - "volume_ratio"         # 量比
+  
+  # 滞后期数(用于计算滞后特征)
+  lag_periods:
+    - 1                      # 1日滞后
+    - 2                      # 2日滞后
+    - 3                      # 3日滞后
+    - 5                      # 5日滞后
+    - 10                     # 10日滞后
+    - 20                     # 20日滞后
+  
+  # 移动平均窗口
+  ma_windows:
+    - 5                      # 5日均线
+    - 10                     # 10日均线
+    - 20                     # 20日均线
+    - 60                     # 60日均线
+  
+  # 收益率计算周期
+  return_periods:
+    - 1                      # 1日收益率
+    - 5                      # 5日收益率
+    - 10                     # 10日收益率
+    - 20                     # 20日收益率
+  
+  # 波动率计算窗口
+  volatility_window: 20      # 20日波动率

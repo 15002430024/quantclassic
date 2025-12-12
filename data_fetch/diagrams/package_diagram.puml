@@ -1,0 +1,190 @@
+@startuml data_loader_package_diagram
+
+!define LIGHTORANGE #FFE4B5
+!define LIGHTBLUE #E6F3FF
+!define LIGHTGREEN #E8F5E9
+!define LIGHTPURPLE #F3E5F5
+!define LIGHTYELLOW #FFFACD
+
+title 量化数据获取工具 - 包图
+
+package "quantclassic.data_loader" {
+    
+    package "配置模块" as config_pkg <<Frame>> LIGHTYELLOW {
+        class ConfigManager
+        class TimeConfig
+        class DataSourceConfig
+        class UniverseConfig
+        class DataFieldsConfig
+        class StorageConfig
+        class ProcessConfig
+        class FeatureConfig
+        
+        file "config.yaml" as yaml
+    }
+    
+    package "数据获取模块" as fetcher_pkg <<Frame>> LIGHTBLUE {
+        class DataFetcher
+        
+        note as fetcher_note
+            <b>功能</b>
+            • 米筐API连接
+            • 批量数据获取
+            • 自动重试机制
+            • 限流控制
+            
+            <b>获取数据类型</b>
+            • 股票列表
+            • 交易日历
+            • 行业分类
+            • 价格行情
+            • 估值指标
+            • 股本信息
+        end note
+    }
+    
+    package "数据处理模块" as processor_pkg <<Frame>> LIGHTGREEN {
+        class DataProcessor
+        
+        note as processor_note
+            <b>功能</b>
+            • 数据清洗
+            • 数据合并
+            • 字段计算
+            
+            <b>特征工程</b>
+            • 技术指标 (20+)
+            • 滞后特征 (防泄漏)
+            • 衍生特征
+            • 移动平均
+            • 波动率计算
+        end note
+    }
+    
+    package "数据验证模块" as validator_pkg <<Frame>> LIGHTPURPLE {
+        class DataValidator
+        
+        note as validator_note
+            <b>功能</b>
+            • 完整性检查
+            • 泄漏检查
+            • 一致性检查
+            • 分布验证
+            
+            <b>输出</b>
+            • 质量报告
+            • 样本验证
+            • 问题诊断
+        end note
+    }
+    
+    package "主控制模块" as pipeline_pkg <<Frame>> LIGHTORANGE {
+        class QuantDataPipeline
+        
+        note as pipeline_note
+            <b>主要接口</b>
+            • run_full_pipeline()
+            • run_incremental_update()
+            • run_custom_universe()
+            • load_existing_data()
+            • get_data_summary()
+            
+            <b>执行模式</b>
+            • 全量模式
+            • 增量模式
+            • 自定义模式
+            • 分步模式
+        end note
+    }
+    
+    package "示例与文档" as docs_pkg <<Frame>> {
+        file "example.py" as example
+        file "rq_data_readme.md" as readme
+        file "QUICKSTART.md" as quick
+        file "PROJECT_SUMMARY.md" as summary
+        
+        note as docs_note
+            <b>文档</b>
+            • 11个使用示例
+            • 详细API文档
+            • 快速开始指南
+            • 项目总结
+            
+            <b>示例场景</b>
+            1. 基础使用
+            2. 配置文件
+            3. 自定义配置
+            4. 自定义股票池
+            5. 分步执行
+            6. 增量更新
+            7. 加载已有数据
+            8. 数据验证
+            9. 自定义处理
+            10. 保存配置
+            11. 生产环境
+        end note
+    }
+}
+
+' 外部依赖
+package "外部依赖" <<Cloud>> {
+    component rqdatac
+    component pandas
+    component numpy
+    component yaml
+    component tqdm
+}
+
+' 数据存储
+package "数据存储" <<Database>> {
+    folder "rq_data_parquet" {
+        folder "basic_data" {
+            file "stock_basic.parquet"
+            file "trade_calendar.parquet"
+            file "industry_classify.parquet"
+        }
+        folder "daily_data" {
+            file "daily_price.parquet"
+            file "daily_valuation.parquet"
+            file "daily_share.parquet"
+        }
+        file "features_raw.parquet" as features
+        file "feature_columns.txt" as cols
+        file "data_quality_report.txt" as report
+    }
+}
+
+' 依赖关系
+QuantDataPipeline ..> ConfigManager : 使用
+QuantDataPipeline *-- DataFetcher : 组合
+QuantDataPipeline *-- DataProcessor : 组合
+QuantDataPipeline *-- DataValidator : 组合
+
+DataFetcher ..> ConfigManager : 依赖
+DataProcessor ..> ConfigManager : 依赖
+DataValidator ..> ConfigManager : 依赖
+
+ConfigManager ..> yaml : 读取
+
+DataFetcher ..> rqdatac : API调用
+DataFetcher ..> pandas : 数据处理
+DataProcessor ..> pandas : 数据处理
+DataProcessor ..> numpy : 计算
+DataValidator ..> pandas : 数据分析
+
+DataFetcher ..> "basic_data" : 保存
+DataFetcher ..> "daily_data" : 保存
+QuantDataPipeline ..> features : 保存
+QuantDataPipeline ..> cols : 保存
+DataValidator ..> report : 保存
+
+' 图例
+legend right
+    |<back:LIGHTYELLOW> 配置 </back>|
+    |<back:LIGHTBLUE> 数据获取 </back>|
+    |<back:LIGHTGREEN> 数据处理 </back>|
+    |<back:LIGHTPURPLE> 数据验证 </back>|
+    |<back:LIGHTORANGE> 主控制 </back>|
+endlegend
+
+@enduml

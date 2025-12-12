@@ -1,0 +1,386 @@
+# VAE 全流程配置示例
+# 适用于 QuantClassic 框架
+# 说明: 这是一个完整的、可运行的配置文件，包含从数据提取到回测的全部流程
+# 使用: 修改 🔧 标记的参数即可自定义整个流程
+
+# ========================================
+# 实验基本信息
+# ========================================
+experiment_name: "vae_full_pipeline_demo"  # 🔧 实验名称
+
+# ========================================
+# 第 1 步: 数据提取（可选）
+# 如果已有 Parquet 文件，可设置 enabled: false
+# ========================================
+data_extraction:
+  enabled: false  # 🔧 是否启用数据提取
+  
+  class_path: "quantclassic.data_fetch.DataFetcher"
+  kwargs:
+    config:
+      # 股票池设置
+      universe:
+        method: "index_components"  # 🔧 index_components / custom_list
+        params:
+          index_code: "000300.XSHG"  # 🔧 沪深300: 000300.XSHG, 中证500: 000905.XSHG
+          # custom_codes: ["000001.XSHE", "600000.XSHG"]  # 自定义股票列表
+      
+      # 时间范围
+      start_date: "2020-01-01"  # 🔧 开始日期
+      end_date: "2023-12-31"    # 🔧 结束日期
+      
+      # 特征配置
+      features:
+        price_features: ["close", "open", "high", "low"]  # 🔧 价格特征
+        technical_indicators: ["rsi", "macd", "kdj_k", "kdj_d"]  # 🔧 技术指标
+        volume_features: ["volume", "amount", "turnover"]  # 🔧 成交量特征
+      
+      # 输出
+      output:
+        path: "output/raw_data.parquet"  # 🔧 输出文件路径
+        format: "parquet"
+
+# ========================================
+# 第 2 步: 数据预处理
+# 核心功能: 自定义每组特征的归一化方法
+# ========================================
+data_preprocessing:
+  enabled: false  # 🔧 是否启用数据预处理
+  class_path: "quantclassic.data_processor.DataPreprocessor"
+  kwargs:
+    config:
+      # 输入输出
+      input_file: "output/train_data_final_01.parquet"  # 🔧 输入文件（来自提取或已有）
+      output_file: "output/preprocessed_data.parquet"   # 🔧 输出文件
+      
+      # 混合预处理策略（关键！）
+      pipeline_steps:
+        # 步骤 1: 价格类特征 → Z-Score 标准化
+        - name: "价格类Z-Score标准化"
+          method: "z_score"  # 🔧 z_score / minmax / rank / winsorize / clip
+          features: ["close", "open", "high", "low"]  # 🔧 null 表示全部特征
+          params: {}
+          enabled: true  # 🔧 是否启用此步骤
+        
+        # 步骤 2: 技术指标 → MinMax 归一化到 [0, 1]
+        - name: "技术指标MinMax归一化"
+          method: "minmax"
+          features: ["rsi", "kdj_k", "kdj_d", "macd"]  # 🔧 指定特征列表
+          params:
+            feature_range: [0, 1]  # 🔧 目标范围
+          enabled: true
+        
+        # 步骤 3: 成交量特征 → Rank 秩归一化到 [-1, 1]
+        - name: "成交量秩归一化"
+          method: "rank"
+          features: ["volume", "amount", "turnover"]
+          params:
+            output_range: [-1, 1]  # 🔧 输出范围
+          enabled: true
+        
+        # 步骤 4: 去极值（可选）
+        - name: "去极值"
+          method: "winsorize"
+          features: null  # null 表示应用到所有特征
+          params:
+            limits: [0.025, 0.025]  # 🔧 上下各去掉 2.5%
+          enabled: false  # 🔧 默认禁用
+        
+        # 步骤 5: 裁剪无穷值（可选）
+        - name: "裁剪无穷值"
+          method: "clip"
+          features: null
+          params:
+            lower: -1e10  # 🔧 下界
+            upper: 1e10   # 🔧 上界
+          enabled: false
+        
+        # 步骤 6: 填充缺失值（可选）
+        - name: "填充缺失值"
+          method: "fillna_median"  # 🔧 fillna_median / fillna_mean / fillna_forward / fillna_zero
+          features: null
+          params: {}
+          enabled: false
+        
+        # 步骤 7: OLS 市值行业中性化（可选）
+        - name: "市值行业中性化"
+          method: "ols_neutralize"
+          features: null
+          params: {}
+          enabled: false
+        
+        # 步骤 8: 相似股票中性化（可选）
+        - name: "相似股票中性化"
+          method: "simstock_neutralize"
+          features: null
+          params: {}
+          enabled: false
+      
+      # 全局配置
+      use_cache: true  # 🔧 是否使用缓存
+      cache_dir: "output/cache"  # 🔧 缓存目录
+
+# ========================================
+# 第 3 步: 数据管理
+# 核心功能: 加载数据、划分数据集、构建 DataLoader
+# ========================================
+data_management:
+  class_path: "quantclassic.data_set.DataManager"
+  kwargs:
+    # 数据源
+    base_dir: "output"  # 🔧 数据目录
+    data_file: "train_data_final_01.parquet"  # 🔧 数据文件名
+    
+    # 核心参数（与模型训练一致！）
+    window_size: 40   # 🔧 时间窗口大小（建议 20-60）
+    batch_size: 512   # 🔧 批次大小（建议 128-2048）
+    num_workers: 4    # 🔧 数据加载进程数（建议 2-8）
+    
+    # 数据划分
+    train_ratio: 0.6  # 🔧 训练集占比
+    val_ratio: 0.2    # 🔧 验证集占比
+    test_ratio: 0.2   # 🔧 测试集占比
+    
+    # 特征过滤
+    auto_filter_features: true  # 🔧 是否自动过滤特征
+    filter_config:
+      na_threshold: 0.3         # 🔧 缺失值比例阈值（>此值的特征将被移除）
+      variance_threshold: 0.01  # 🔧 方差阈值（<此值的特征将被移除）
+    
+    # 列名配置（根据实际数据文件调整）
+    stock_col: "order_book_id"  # 🔧 股票代码列名
+    time_col: "trade_date"      # 🔧 时间列名
+    label_col: "y_processed"    # 🔧 标签列名（收益率）
+
+# ========================================
+# 第 4 步: 模型训练
+# 核心功能: VAE 模型架构 + 训练超参数
+# ========================================
+model_training:
+  class_path: "quantclassic.model.TimeSeriesVAE"
+  kwargs:
+    # VAE 模型架构
+    input_dim: null       # 自动从数据推断（特征数量）
+    hidden_dim: 128       # 🔧 GRU 隐藏层维度（建议 64-256）
+    latent_dim: 16        # 🔧 潜在空间维度（提取的因子数，建议 8-32）
+    num_layers: 2         # 🔧 GRU 层数（建议 1-3）
+    dropout: 0.3          # 🔧 Dropout 率（建议 0.1-0.5）
+    bidirectional: false  # 🔧 是否使用双向 GRU
+    
+    # VAE 损失权重（关键参数！）
+    alpha_recon: 0.1   # 🔧 重构损失权重（建议 0.01-1.0）
+    beta_kl: 0.001     # 🔧 KL 散度损失权重（建议 0.0001-0.01）
+    gamma_pred: 1.0    # 🔧 预测损失权重（建议 0.1-1.0）
+    # 说明:
+    #   - alpha_recon 高: 更好的特征重构质量
+    #   - beta_kl 高: 潜在空间更符合标准正态分布
+    #   - gamma_pred 高: 收益率预测更准确
+    
+    # 训练参数
+    n_epochs: 100      # 🔧 训练轮数（建议 30-200）
+    lr: 0.001          # 🔧 学习率（建议 0.0001-0.01）
+    early_stop: 15     # 🔧 早停 patience（建议 5-20）
+    device: "cuda"     # 🔧 cuda / cpu
+    
+    # 输出
+    model_save_path: "output/best_model_full_pipeline.pth"  # 🔧 模型保存路径
+    log_dir: "logs/vae_full_pipeline"  # 🔧 日志目录
+
+# ========================================
+# 第 5 步: 因子回测
+# 核心功能: IC 分析、分组回测、绩效评估
+# ========================================
+factor_backtest:
+  class_path: "quantclassic.backtest.ICAnalyzer"
+  kwargs:
+    config:
+      # 输入
+      factor_file: "output/vae_factors.parquet"  # 🔧 因子文件（从模型输出）
+      return_file: "output/stock_returns.parquet"  # 🔧 收益率文件
+      
+      # 输出
+      output_dir: "output/vae_backtest"  # 🔧 回测结果目录
+      save_plots: true      # 🔧 是否保存图表
+      generate_excel: true  # 🔧 是否生成 Excel 报告
+      
+      # 回测参数
+      n_groups: 10  # 🔧 分组数（建议 5/10/20）
+      
+      # IC 分析
+      ic_method: "spearman"  # 🔧 pearson / spearman
+      rolling_window: 20     # 🔧 滚动窗口（计算滚动 IC）
+      
+      # 多空组合
+      long_short:
+        enabled: true         # 🔧 是否启用多空组合
+        top_quantile: 0.1     # 🔧 做多前 10%
+        bottom_quantile: 0.1  # 🔧 做空后 10%
+        commission: 0.0003    # 🔧 交易手续费（万三）
+      
+      # 绩效指标
+      metrics:
+        - "IC"
+        - "Rank IC"
+        - "IC_IR"
+        - "Group Return"
+        - "Long-Short Return"
+        - "Sharpe Ratio"
+        - "Max Drawdown"
+
+# ========================================
+# 第 6 步: 任务配置
+# 核心: 定义数据集(dataset)和模型(model)
+# ========================================
+task:
+  # 数据集配置（必需）
+  dataset:
+    class: "quantclassic.data_set.DataManager"  # 🔧 完整类路径
+    kwargs:
+      # 引用前面的 data_management 配置
+      base_dir: "output"
+      data_file: "train_data_final_01.parquet"
+      window_size: 40
+      batch_size: 512
+      num_workers: 4
+      train_ratio: 0.6
+      val_ratio: 0.2
+      test_ratio: 0.2
+      stock_col: "order_book_id"  # 🔧 股票代码列名(根据实际数据文件)
+      time_col: "trade_date"      # 🔧 时间列名(根据实际数据文件)
+      label_col: "y_processed"    # 🔧 标签列名(根据实际数据文件)
+  
+  # 模型配置（必需）
+  model:
+    class: "quantclassic.model.TimeSeriesVAE"  # 🔧 完整类路径
+    kwargs:
+      # 引用前面的 model_training 配置
+      input_dim: null  # 自动推断
+      hidden_dim: 128
+      latent_dim: 16
+      num_layers: 2
+      dropout: 0.3
+      bidirectional: false
+      alpha_recon: 0.1
+      beta_kl: 0.001
+      gamma_pred: 1.0
+      n_epochs: 100
+      lr: 0.001
+      early_stop: 15
+      device: "cuda"
+      model_save_path: "output/best_model_full_pipeline.pth"
+      log_dir: "logs/vae_full_pipeline"
+  
+  # 回测配置（可选）
+  backtest:
+    enabled: false  # 🔧 是否执行回测
+    output_dir: "output/backtest_results"
+    n_groups: 10
+    ic_method: "spearman"
+    save_plots: true
+    generate_excel: true
+
+# ========================================
+# 第 7 步: 工作流管理（可选）
+# 记录实验、保存结果、版本控制
+# ========================================
+workflow:
+  enabled: true  # 🔧 是否启用实验管理
+  
+  # 实验记录
+  recorder:
+    experiment_name: "vae_full_pipeline_demo"  # 🔧 实验名称
+    uri: "mlruns"  # 🔧 MLflow URI（本地路径或远程服务器）
+    
+    # 记录内容
+    log_params: true   # 🔧 记录超参数
+    log_metrics: true  # 🔧 记录评估指标
+    log_artifacts: true  # 🔧 记录模型和图表
+    
+    # 自动标签
+    tags:
+      model_type: "VAE"
+      task_type: "factor_mining"
+      dataset: "stock_market"
+  
+  # 结果保存
+  artifacts:
+    - "output/best_model_full_pipeline.pth"  # 模型文件
+    - "output/vae_backtest/"  # 回测结果
+    - "logs/vae_full_pipeline/"  # 训练日志
+    - "output/vae_factors.parquet"  # 生成的因子
+  
+  # 检查点管理
+  checkpoint:
+    save_frequency: 10  # 🔧 每N个epoch保存一次checkpoint
+    keep_last_n: 3      # 🔧 保留最近N个checkpoint
+    save_best_only: false  # 🔧 是否只保存最佳模型
+
+# ========================================
+# 自定义检查提示（运行前确认）
+# ========================================
+# ⚠️ 重要提示:
+#   1. 确保 window_size 与 batch_size 适配（window_size 过大会导致内存不足）
+#   2. 确保预处理方法与特征类型匹配（如价格用 Z-Score，技术指标用 MinMax）
+#   3. 确保数据文件路径正确（data_file 需存在）
+#   4. 如需修改特征，请同步更新 data_extraction 和 data_preprocessing
+#   5. VAE 损失权重建议从默认值开始，再根据结果微调
+#   6. task 配置中必须包含 dataset 和 model 字段
+
+# ========================================
+# 快速配置示例
+# ========================================
+# 场景 1: 快速原型（小数据集，快速训练）
+#   task:
+#     dataset:
+#       class: "quantclassic.data_set.DataManager"
+#       kwargs:
+#         config:
+#           window_size: 20
+#           batch_size: 128
+#     model:
+#       class: "quantclassic.model.TimeSeriesVAE"
+#       kwargs:
+#         hidden_dim: 64
+#         latent_dim: 8
+#         n_epochs: 30
+#         early_stop: 5
+
+# 场景 2: 生产环境（大数据集，高性能）
+#   task:
+#     dataset:
+#       class: "quantclassic.data_set.DataManager"
+#       kwargs:
+#         config:
+#           window_size: 60
+#           batch_size: 1024
+#           num_workers: 8
+#     model:
+#       class: "quantclassic.model.TimeSeriesVAE"
+#       kwargs:
+#         hidden_dim: 256
+#         latent_dim: 32
+#         n_epochs: 200
+#         early_stop: 20
+
+# 场景 3: 超参数搜索（Grid Search）
+#   - 复制此文件 3 份
+#   - 分别设置 model.kwargs.latent_dim: [8, 16, 32]
+#   - 批量运行: python -m config.cli config1.yaml config2.yaml config3.yaml
+
+# 场景 4: 调整损失权重（重视预测）
+#   task:
+#     model:
+#       class: "quantclassic.model.TimeSeriesVAE"
+#       kwargs:
+#         alpha_recon: 0.01  # 降低重构权重
+#         beta_kl: 0.0001    # 降低KL权重
+#         gamma_pred: 1.0    # 保持预测权重
+
+# 场景 5: 调整损失权重（重视重构）
+#   task:
+#     model:
+#       class: "quantclassic.model.TimeSeriesVAE"
+#       kwargs:
+#         alpha_recon: 1.0   # 提高重构权重
+#         beta_kl: 0.001     # 保持KL权重
+#         gamma_pred: 0.1    # 降低预测权重

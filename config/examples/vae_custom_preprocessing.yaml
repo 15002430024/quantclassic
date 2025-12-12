@@ -1,0 +1,128 @@
+# VAE 自定义数据预处理配置示例
+# 展示如何对不同特征使用不同的标准化方法
+
+experiment_name: vae_custom_preprocessing
+
+task:
+  # ========================================================================
+  # 数据预处理 - 分组处理不同类型的特征
+  # ========================================================================
+  preprocessor:
+    class: DataPreprocessor
+    module_path: quantclassic.data_processor.data_preprocessor
+    kwargs:
+      config:
+        pipeline_steps:
+          # 步骤1: 统一处理无穷值
+          - name: "处理无穷值"
+            method: "clip"
+            features: null
+            enabled: true
+            params:
+              lower: -1e10
+              upper: 1e10
+          
+          # 步骤2: 统一填充缺失值
+          - name: "填充缺失值"
+            method: "fillna_median"
+            features: null
+            enabled: true
+            params: {}
+          
+          # 步骤3: 统一去极值
+          - name: "去极值"
+            method: "winsorize"
+            features: null
+            enabled: true
+            params:
+              limits: [0.025, 0.025]
+          
+          # 步骤4: 价格类特征 - Z-Score标准化
+          - name: "价格类Z-Score"
+            method: "z_score"
+            features:
+              - "close"
+              - "open"
+              - "high"
+              - "low"
+              - "vwap"
+            enabled: true
+            params: {}
+          
+          # 步骤5: 技术指标 - MinMax归一化到[0,1]
+          - name: "技术指标MinMax"
+            method: "minmax"
+            features:
+              - "rsi"
+              - "kdj_k"
+              - "kdj_d"
+              - "cci"
+              - "macd_dif"
+              - "macd_dea"
+            enabled: true
+            params:
+              feature_range: [0, 1]
+          
+          # 步骤6: 成交量类 - 秩归一化到[-1,1]
+          - name: "成交量秩归一化"
+            method: "rank"
+            features:
+              - "volume"
+              - "amount"
+              - "turnover_rate"
+            enabled: true
+            params:
+              output_range: [-1, 1]
+        
+        # 按日期分组处理
+        groupby_columns:
+          - "trade_date"
+        
+        # ID列不参与处理
+        id_columns:
+          - "ts_code"
+          - "trade_date"
+        
+        # 其他选项
+        save_intermediate: false
+        validate_each_step: true
+        verbose: true
+  
+  # ========================================================================
+  # 数据集
+  # ========================================================================
+  dataset:
+    class: DataManager
+    module_path: quantclassic.data_set.manager
+    kwargs:
+      config:
+        base_dir: "output"
+        data_file: "train_data_final_01.parquet"
+        window_size: 40
+        batch_size: 512
+        num_workers: 4
+        train_ratio: 0.6
+        val_ratio: 0.2
+        test_ratio: 0.2
+        auto_filter_features: true
+        shuffle: true
+  
+  # ========================================================================
+  # 模型
+  # ========================================================================
+  model:
+    class: VAE
+    module_path: quantclassic.model.pytorch_models
+    kwargs:
+      d_feat: 20
+      hidden_dim: 128
+      latent_dim: 16
+      window_size: 40
+      dropout: 0.3
+      alpha_recon: 0.1
+      beta_kl: 0.001
+      gamma_pred: 1.0
+      n_epochs: 50
+      lr: 0.001
+      batch_size: 512
+      device: "cuda"

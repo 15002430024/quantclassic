@@ -1,0 +1,247 @@
+# VAE 面向对象配置示例
+# 使用新的配置类结构，更清晰、更易维护
+
+# ========================================
+# 实验基本信息
+# ========================================
+experiment_name: "vae_oop_demo"
+
+# ========================================
+# 模型配置 (使用 VAEConfig)
+# ========================================
+model:
+  # 模型类型标识（用于工厂创建）
+  model_type: "vae"
+  
+  # 模型架构参数
+  input_dim: null  # 自动从数据推断
+  hidden_dim: 128
+  latent_dim: 16
+  num_layers: 2
+  dropout: 0.3
+  bidirectional: false
+  
+  # 编码器/解码器类型
+  encoder_type: "gru"
+  decoder_type: "gru"
+  
+  # VAE 损失权重
+  alpha_recon: 0.1    # 重构损失
+  beta_kl: 0.001      # KL 散度
+  gamma_pred: 1.0     # 预测损失
+  
+  # 训练参数
+  n_epochs: 100
+  batch_size: 512
+  learning_rate: 0.001
+  early_stop: 15
+  
+  # 优化器和损失
+  optimizer: "adam"
+  loss_fn: "mse"
+  
+  # 设备和随机种子
+  device: "cuda"
+  seed: 42
+  
+  # 保存路径
+  model_save_path: "output/vae_oop_model.pth"
+  log_dir: "logs/vae_oop"
+  
+  # 调试
+  verbose: true
+
+# ========================================
+# 数据配置 (使用 DataConfig)
+# ========================================
+data:
+  # 数据路径
+  base_dir: "output"
+  data_file: "train_data_final_01.parquet"
+  cache_dir: "cache/data_set"
+  output_dir: "output"
+  
+  # 数据文件格式
+  data_format: "parquet"
+  
+  # 特征工程参数
+  window_size: 40
+  label_col: "y_processed"
+  stock_col: "order_book_id"
+  time_col: "trade_date"
+  
+  # 排除的列
+  exclude_cols:
+    - "order_book_id"
+    - "trade_date"
+    - "y_processed"
+    - "y_raw"
+    - "y_winsorized"
+    - "industry_name"
+  
+  # 特征列（null 表示自动检测）
+  feature_cols: null
+  
+  # 标准化方法
+  standardize_method: "zscore"
+  fill_na_method: "forward"
+  winsorize_limits: [0.01, 0.01]
+  
+  # 数据划分
+  split_strategy: "time_series"
+  train_ratio: 0.6
+  val_ratio: 0.2
+  test_ratio: 0.2
+  
+  # 时间划分切点（可选）
+  train_end_date: null
+  val_end_date: null
+  
+  # 数据加载参数
+  batch_size: 512  # 应与 model.batch_size 一致
+  num_workers: 4
+  pin_memory: false
+  shuffle_train: true
+  
+  # 内存优化
+  use_dtype_optimization: true
+  chunk_size: null
+  
+  # 缓存策略
+  enable_cache: true
+  cache_feature_engineering: true
+  cache_split_data: true
+  cache_expire_hours: 24
+  
+  # 数据验证
+  enable_validation: true
+  max_na_ratio: 0.3
+  min_samples_per_stock: 60
+  detect_outliers: true
+  outlier_std_threshold: 5.0
+  
+  # 日志
+  verbose: true
+  log_level: "INFO"
+  save_data_report: true
+
+# ========================================
+# 预处理配置 (使用 PreprocessConfig)
+# ========================================
+preprocessing:
+  # 处理流水线
+  pipeline_steps:
+    - name: "填充缺失值"
+      method: "fillna_median"
+      features: null
+      enabled: true
+      params: {}
+    
+    - name: "去极值"
+      method: "winsorize"
+      features: null
+      enabled: true
+      params:
+        limits: [0.025, 0.025]
+    
+    - name: "Z-Score 标准化"
+      method: "z_score"
+      features: null
+      enabled: true
+      params: {}
+  
+  # 列映射
+  column_mapping: {}
+  
+  # 分组列
+  groupby_columns:
+    - "trade_date"
+  
+  # ID 列（不处理）
+  id_columns:
+    - "order_book_id"
+    - "trade_date"
+  
+  # 中性化配置
+  neutralize_config:
+    industry_column: "industry_name"
+    market_cap_column: "total_mv"
+    min_samples: 10
+  
+  # 保存选项
+  save_intermediate: false
+  intermediate_dir: "intermediate_results"
+  
+  # 验证选项
+  validate_each_step: true
+  verbose: true
+
+# ========================================
+# 工作流配置 (使用 WorkflowConfig)
+# ========================================
+workflow:
+  # 是否启用工作流
+  enabled: true
+  
+  # 记录器配置
+  recorder:
+    experiment_name: "vae_oop_demo"
+    recorder_name: "run_001"
+    uri: "output/experiments"
+    save_dir: "output/experiments"
+    log_params: true
+    log_metrics: true
+    log_artifacts: true
+    tags:
+      model_type: "VAE"
+      task_type: "factor_mining"
+      dataset: "stock_market"
+      config_style: "oop"
+    auto_start: true
+  
+  # 检查点配置
+  checkpoint:
+    save_frequency: 10
+    keep_last_n: 3
+    save_best_only: false
+    checkpoint_dir: "output/checkpoints"
+  
+  # 工件配置
+  artifacts:
+    artifact_paths:
+      - "output/vae_oop_model.pth"
+      - "logs/vae_oop/"
+    artifact_types: {}
+  
+  # 结果保存
+  results_dir: "output/results"
+
+# ========================================
+# 使用说明
+# ========================================
+# 
+# 1. 加载配置：
+#    from config.loader import ConfigLoader
+#    from model.model_config import VAEConfig
+#    from data_manager.config import DataConfig
+#    
+#    # 加载整个配置
+#    full_config = ConfigLoader.load('vae_oop.yaml', return_dict=True)
+#    
+#    # 加载特定部分
+#    model_config = VAEConfig.from_dict(full_config['model'])
+#    data_config = DataConfig.from_dict(full_config['data'])
+#
+# 2. 修改配置：
+#    model_config.update(hidden_dim=256, latent_dim=32)
+#    data_config.update(batch_size=1024)
+#
+# 3. 保存配置：
+#    model_config.to_yaml('updated_model_config.yaml')
+#
+# 4. 配置验证：
+#    model_config.validate()  # 自动验证参数合法性
+#
+# 5. 使用工厂创建：
+#    from model.model_config import ModelConfigFactory
+#    config = ModelConfigFactory.create('vae', hidden_dim=256)

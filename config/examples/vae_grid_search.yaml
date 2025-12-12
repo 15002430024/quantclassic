@@ -1,0 +1,93 @@
+# VAE 超参数网格搜索配置
+# 用于批量测试不同的 latent_dim 配置
+
+# 使用方法:
+# for latent in 8 16 32; do
+#     python -m quantclassic.config.cli vae_grid_search_latent${latent}.yaml
+# done
+
+experiment_name: vae_latent8  # 手动修改为 vae_latent16, vae_latent32
+
+task:
+  dataset:
+    class: DataManager
+    module_path: quantclassic.data_set.manager
+    kwargs:
+      config:
+        base_dir: "output"
+        data_file: "train_data_final_01.parquet"
+        window_size: 40
+        batch_size: 512
+        num_workers: 4
+        train_ratio: 0.6
+        val_ratio: 0.2
+        test_ratio: 0.2
+        shuffle: true
+  
+  model:
+    class: VAE
+    module_path: quantclassic.model.pytorch_models
+    kwargs:
+      d_feat: 20
+      hidden_dim: 128
+      latent_dim: 8  # 🔧 修改此值: 8, 16, 32
+      window_size: 40
+      dropout: 0.3
+      
+      # VAE损失权重
+      alpha_recon: 0.1
+      beta_kl: 0.001
+      gamma_pred: 1.0
+      
+      # 训练参数
+      n_epochs: 50
+      lr: 0.001
+      batch_size: 512
+      device: "cuda"
+      seed: 42  # 固定随机种子保证可复现
+  
+  backtest:
+    class: FactorBacktestSystem
+    module_path: quantclassic.backtest.backtest_system
+    kwargs:
+      config:
+        output_dir: "output/vae_latent8"  # 🔧 修改输出目录
+        save_plots: true
+        generate_excel: true
+        n_groups: 10
+        ic_method: "spearman"
+
+# ========================================================================
+# 网格搜索脚本示例 (Bash)
+# ========================================================================
+# 
+# #!/bin/bash
+# 
+# for latent in 8 16 32; do
+#     # 复制模板
+#     cp vae_grid_search.yaml vae_latent${latent}.yaml
+#     
+#     # 修改 latent_dim
+#     sed -i "s/latent_dim: 8/latent_dim: ${latent}/g" vae_latent${latent}.yaml
+#     sed -i "s/experiment_name: vae_latent8/experiment_name: vae_latent${latent}/g" vae_latent${latent}.yaml
+#     sed -i "s/output_dir: \"output\/vae_latent8\"/output_dir: \"output\/vae_latent${latent}\"/g" vae_latent${latent}.yaml
+#     
+#     # 运行
+#     echo "========================================="
+#     echo "Running with latent_dim=${latent}"
+#     echo "========================================="
+#     python -m quantclassic.config.cli vae_latent${latent}.yaml
+# done
+# 
+# # 对比结果
+# echo "========================================="
+# echo "Results comparison:"
+# echo "========================================="
+# for latent in 8 16 32; do
+#     echo "Latent dim: ${latent}"
+#     cat output/vae_latent${latent}/backtest_report.txt | grep "IC均值"
+#     cat output/vae_latent${latent}/backtest_report.txt | grep "年化夏普"
+#     echo ""
+# done
+# 
+# ========================================================================

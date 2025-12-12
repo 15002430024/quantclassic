@@ -1,0 +1,110 @@
+# VAE 大批次训练配置
+# 适用于大GPU显存环境（16GB+）
+
+experiment_name: vae_large_batch
+
+task:
+  dataset:
+    class: DataManager
+    module_path: quantclassic.data_set.manager
+    kwargs:
+      config:
+        base_dir: "output"
+        data_file: "train_data_final_01.parquet"
+        
+        # 大批次设置
+        window_size: 60        # 更长的时间窗口
+        batch_size: 2048       # 大批次
+        num_workers: 8         # 更多工作进程
+        
+        # 数据划分
+        train_ratio: 0.6
+        val_ratio: 0.2
+        test_ratio: 0.2
+        shuffle: true
+        
+        # 自动特征筛选
+        auto_filter_features: true
+        filter_config:
+          na_threshold: 0.2
+          variance_threshold: 0.01
+          correlation_threshold: 0.95
+  
+  model:
+    class: VAE
+    module_path: quantclassic.model.pytorch_models
+    kwargs:
+      # 模型架构
+      d_feat: 20
+      hidden_dim: 256        # 更大的隐藏层
+      latent_dim: 32         # 更大的潜在空间
+      window_size: 60
+      dropout: 0.3
+      num_layers: 2
+      
+      # VAE损失权重
+      alpha_recon: 0.1
+      beta_kl: 0.001
+      gamma_pred: 1.0
+      
+      # 训练参数 - 大批次配置
+      n_epochs: 100
+      lr: 0.002              # 大批次可以用更大学习率
+      batch_size: 2048
+      early_stop: 20
+      
+      # 优化器 - AdamW更适合大批次
+      optimizer: "AdamW"
+      optimizer_params:
+        weight_decay: 1e-4
+        betas: [0.9, 0.999]
+        eps: 1e-8
+      
+      # 学习率调度器 - 在验证集不下降时降低学习率
+      scheduler: "ReduceLROnPlateau"
+      scheduler_params:
+        mode: "min"
+        factor: 0.5          # 降低到原来的50%
+        patience: 5          # 等待5个epoch
+        min_lr: 1e-6         # 最小学习率
+        verbose: true
+      
+      # 设备
+      device: "cuda"
+      seed: 42
+  
+  backtest:
+    class: FactorBacktestSystem
+    module_path: quantclassic.backtest.backtest_system
+    kwargs:
+      config:
+        output_dir: "output/vae_large_batch"
+        save_plots: true
+        generate_excel: true
+        n_groups: 10
+        ic_method: "spearman"
+        device: "cuda"
+
+# ========================================================================
+# 使用说明
+# ========================================================================
+# 
+# 1. 适用环境:
+#    - GPU显存: 16GB+
+#    - 系统内存: 32GB+
+#    - CPU核心: 8+
+# 
+# 2. 优势:
+#    - 更稳定的梯度估计
+#    - 更快的训练速度（每个epoch）
+#    - 可以使用更大的模型
+# 
+# 3. 注意事项:
+#    - 如果出现 OOM，减小 batch_size
+#    - 如果CPU瓶颈，减小 num_workers
+#    - 如果训练不稳定，减小 lr
+# 
+# 4. 运行:
+#    python -m quantclassic.config.cli vae_large_batch.yaml
+# 
+# ========================================================================

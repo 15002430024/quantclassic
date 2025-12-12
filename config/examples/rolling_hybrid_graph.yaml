@@ -1,0 +1,131 @@
+# =============================================================================
+# QuantClassic 滚动训练 + 动态图 配置示例
+# =============================================================================
+# 此配置展示了如何使用新的配置系统：
+# 1. 使用 RollingDailyTrainer 进行滚动窗口训练
+# 2. 配置 GraphBuilder 构建动态邻接矩阵
+# 3. 使用 HybridGraphModel (RNN+Attention+GAT+MLP)
+# =============================================================================
+
+# 任务配置
+task:
+  # ==================== 模型配置 ====================
+  model_class: "HybridGraphModel"
+  model_kwargs:
+    d_feat: 20                    # 输入特征维度
+    rnn_hidden: 64                # RNN 隐藏层大小
+    rnn_layers: 2                 # RNN 层数
+    rnn_type: "lstm"              # RNN 类型: lstm / gru
+    use_attention: true           # 是否使用 Self-Attention
+    use_graph: true               # 是否使用图神经网络
+    gat_hidden: 32                # GAT 隐藏层维度
+    gat_heads: 4                  # GAT 注意力头数
+    mlp_hidden_sizes: [64]        # MLP 隐藏层尺寸
+    dropout: 0.3                  # Dropout 概率
+    use_residual: true            # 🆕 是否使用残差连接
+    output_dim: 1                 # 输出维度（单因子）
+    # 训练参数
+    n_epochs: 50
+    learning_rate: 0.001
+    early_stop: 10
+    batch_size: 256
+  
+  # ==================== 数据集配置 ====================
+  dataset_class: "DataManager"
+  dataset_kwargs:
+    config:
+      # 数据路径
+      base_dir: "rq_data_parquet"
+      data_file: "train_data_final.parquet"
+      cache_dir: "cache/data_set"
+      output_dir: "output"
+      
+      # 特征工程
+      window_size: 40
+      label_col: "y_processed"
+      stock_col: "order_book_id"
+      time_col: "trade_date"
+      
+      # 数据划分 - 滚动窗口模式
+      split_strategy: "rolling"
+      rolling_window_size: 252     # 约1年
+      rolling_step: 63             # 约1季度
+      
+      # 窗口级变换（研报标准）
+      enable_window_transform: true
+      window_price_log: true
+      window_volume_norm: true
+      
+      # 🆕 图构建器配置 - 这是关键！
+      graph_builder_config:
+        type: "hybrid"             # 混合图: α * corr + (1-α) * industry
+        alpha: 0.7                 # 相关性图权重
+        corr_method: "cosine"      # 相似度计算方法: cosine / pearson / spearman
+        top_k: 10                  # 每只股票保留的邻居数
+        industry_col: "industry_name"
+        industry_adj_path: "output/industry_adj_matrix.pt"  # 预计算的行业邻接矩阵
+        add_self_loop: true
+        symmetric: true
+      
+      # 批次配置
+      batch_size: 256
+      num_workers: 0
+      shuffle_train: true
+      
+      # 日志
+      verbose: true
+      log_level: "INFO"
+  
+  # ==================== 🆕 训练器配置 ====================
+  trainer_class: "RollingDailyTrainer"
+  trainer_kwargs:
+    n_epochs: 20                  # 每个窗口的训练轮数
+    learning_rate: 0.001
+    early_stop: 5
+    warm_start: true              # 继承上一窗口的模型权重
+    save_each_window: true        # 保存每个窗口的模型
+    save_dir: "output/rolling_models"
+    # 学习率调度器
+    use_scheduler: true
+    scheduler_type: "plateau"
+    scheduler_patience: 5
+    scheduler_factor: 0.5
+  
+  # 🆕 使用滚动窗口加载器
+  use_rolling_loaders: true
+  use_daily_loaders: false
+  
+  # ==================== 回测配置（可选）====================
+  backtest_enabled: false
+  backtest_kwargs:
+    start_date: "2023-01-01"
+    end_date: "2024-12-31"
+    top_k: 50
+    rebalance_freq: "weekly"
+
+
+# =============================================================================
+# 使用方式:
+# =============================================================================
+# 方式 1: CLI 运行
+#   python -m quantclassic.cli run --config rolling_hybrid_graph.yaml
+#
+# 方式 2: Python 代码
+#   from quantclassic.config import ConfigLoader, TaskRunner
+#   
+#   config = ConfigLoader.load('rolling_hybrid_graph.yaml')
+#   runner = TaskRunner()
+#   results = runner.run(config, experiment_name='rolling_hybrid')
+#
+# 方式 3: 使用 TaskConfig 对象
+#   from quantclassic.config.base_config import TaskConfig
+#   
+#   task_config = TaskConfig(
+#       model_class='HybridGraphModel',
+#       model_kwargs={...},
+#       trainer_class='RollingDailyTrainer',
+#       use_rolling_loaders=True,
+#       ...
+#   )
+#   results = runner.run(task_config)
+# =============================================================================

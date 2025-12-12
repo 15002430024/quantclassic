@@ -1,0 +1,20 @@
+# 测试配置 - 验证配置系统是否正常工作
+# 这个配置不需要安装 torch 等依赖
+
+experiment_name: "config_test"
+
+# 使用简单的Python类进行测试
+task:
+  dataset:
+    class: "pathlib.Path"  # 使用Python标准库的类
+    kwargs:
+      # Path 类的构造函数参数
+      path_segments: "output"
+  
+  model:
+    class: "pathlib.Path"  # 使用Python标准库的类
+    kwargs:
+      path_segments: "model"
+
+workflow:
+  enabled: false

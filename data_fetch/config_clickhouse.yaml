@@ -1,0 +1,110 @@
+# ClickHouse ETF 数据源配置示例
+
+# ==================== 时间配置 ====================
+time_settings:
+  start_date: "2024-08-25"   # 数据开始日期
+  end_date: "2024-11-23"      # 数据结束日期
+  frequency: "1d"             # 数据频率: 1d-日频
+
+# ==================== 数据源配置 ====================
+data_source:
+  source: "clickhouse"        # 使用 ClickHouse 数据源
+  market: "cn"                # 市场: cn-中国
+  auth_method: "config_file"  # 认证方式
+  
+  # ClickHouse 连接配置
+  clickhouse_config:
+    host: "10.13.66.5"        # 数据库主机
+    port: 20108               # 数据库端口
+    user: "etf_visitor"       # 用户名
+    password: "etf_lh_2025"   # 密码
+    database: "etf"           # 数据库名
+
+# ==================== 股票池配置 ====================
+# 注：ClickHouse 数据源主要提供 ETF 数据
+universe:
+  universe_type: "all_a"      # 获取所有可用的 ETF
+  custom_stocks: null         # 可指定特定 ETF 列表
+  exclude_st: false           # ETF 通常没有 ST
+  main_board_only: false
+  min_list_days: 0
+
+# ==================== 数据字段配置 ====================
+fields:
+  # 行情数据字段（ClickHouse 已包含）
+  price_fields:
+    - "open"                  # 开盘价
+    - "high"                  # 最高价
+    - "low"                   # 最低价
+    - "close"                 # 收盘价
+    - "volume"                # 成交量
+    - "total_turnover"        # 成交额
+  
+  # 估值数据字段（ClickHouse 已包含）
+  valuation_fields:
+    - "pe_ratio"              # 市盈率
+    - "pb_ratio"              # 市净率
+    - "market_cap"            # 总市值
+    - "a_share_market_val_in_circulation"  # 流通市值
+  
+  # ETF 特有字段（ClickHouse 提供）
+  etf_fields:
+    - "nav"                   # 净值
+    - "acc_nav"               # 累计净值
+    - "premium_rate"          # 溢价率
+  
+  # 行业分类（对 ETF 来说是类型分类）
+  industry_source: "etf_type" # ETF 类型分类
+  industry_level: 1
+
+# ==================== 存储配置 ====================
+storage:
+  save_dir: "etf_data"        # 数据保存目录
+  file_format: "parquet"      # 文件格式: parquet（推荐）, csv
+  compression: "snappy"       # 压缩格式: snappy, gzip, null
+  
+  # 子目录结构
+  basic_data_dir: "basic_data"
+  daily_data_dir: "daily_data"
+
+# ==================== 处理流程配置 ====================
+process:
+  batch_size: 100             # ETF 批处理较小
+  retry_times: 3
+  sleep_interval: 0.1
+  timeout: 30
+  
+  use_multiprocessing: false
+  max_workers: 4
+
+# ==================== 特征工程配置 ====================
+features:
+  # 技术指标
+  technical_indicators:
+    - "sma"                   # 移动平均
+    - "volatility"            # 波动率
+    - "momentum"              # 动量
+  
+  # 滞后期数
+  lag_periods:
+    - 1
+    - 5
+    - 10
+    - 20
+  
+  # 移动平均窗口
+  ma_windows:
+    - 5
+    - 10
+    - 20
+    - 60
+  
+  # 收益率计算周期
+  return_periods:
+    - 1
+    - 5
+    - 10
+    - 20
+  
+  # 波动率计算窗口
+  volatility_window: 20

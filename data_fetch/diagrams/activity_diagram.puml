@@ -1,0 +1,203 @@
+@startuml data_loader_activity_diagram
+
+!define LIGHTBLUE #E6F3FF
+!define LIGHTGREEN #E8F5E9
+!define LIGHTYELLOW #FFFACD
+!define LIGHTPINK #FFE4E1
+
+title 量化数据获取工具 - 活动图
+
+|用户|
+start
+:调用 QuantDataPipeline();
+
+|Pipeline|
+:初始化配置;
+:创建 ConfigManager;
+:创建 DataFetcher;
+:创建 DataProcessor;
+:创建 DataValidator;
+
+|用户|
+:调用 run_full_pipeline();
+
+|Pipeline|
+partition "1. 获取基础数据" #LIGHTYELLOW {
+    |DataFetcher|
+    :获取股票池;
+    if (股票池类型?) then (指数成分)
+        :调用 index_components API;
+    else (全部A股)
+        :调用 all_instruments API;
+    else (自定义)
+        :读取自定义列表;
+    endif
+    
+    :应用筛选规则;
+    note right
+        • 排除ST股票
+        • 筛选上市时间
+        • 按市值排序
+    end note
+    
+    :获取交易日历;
+    :获取行业分类;
+    
+    if (保存中间结果?) then (是)
+        :保存到 basic_data/;
+    endif
+}
+
+partition "2. 获取日频数据" #LIGHTBLUE {
+    |DataFetcher|
+    
+    fork
+        :获取价格数据;
+        repeat
+            :批量获取一批股票;
+            :调用 get_price API;
+            :重置索引;
+            :重命名字段;
+        repeat while (还有剩余股票?) is (是)
+        -> 否;
+    fork again
+        :获取估值数据;
+        repeat
+            :批量获取一批股票;
+            :调用 get_factor API;
+            :处理估值字段;
+        repeat while (还有剩余股票?) is (是)
+        -> 否;
+    fork again
+        :获取股本数据;
+        repeat
+            :批量获取一批股票;
+            :调用 get_factor API;
+            :处理股本字段;
+        repeat while (还有剩余股票?) is (是)
+        -> 否;
+    end fork
+    
+    if (保存中间结果?) then (是)
+        :保存到 daily_data/;
+    endif
+}
+
+partition "3. 数据合并与清洗" #LIGHTGREEN {
+    |DataProcessor|
+    :合并价格、估值、股本数据;
+    :删除重复行;
+    :排序(股票代码+日期);
+    :修正列名顺序;
+}
+
+partition "4. 计算基础字段" #LIGHTGREEN {
+    |DataProcessor|
+    :计算涨跌幅 pct_chg;
+    :计算前收盘价 pre_close;
+    :计算振幅 amplitude;
+    
+    if (有股本数据?) then (是)
+        :计算换手率 turnover_rate;
+        :计算量比 volume_ratio;
+    endif
+}
+
+partition "5. 特征工程" #LIGHTGREEN {
+    |DataProcessor|
+    
+    :计算收益率特征;
+    note right
+        ret_1d, ret_5d, ret_10d, ret_20d
+    end note
+    
+    :计算波动率;
+    note right
+        vol_20d = rolling(20).std()
+    end note
+    
+    :计算移动平均;
+    note right
+        ma_close_5d, ma_close_20d
+        ma_vol_5d, ma_vol_20d
+    end note
+    
+    :计算滞后特征;
+    note right
+        <b>防止数据泄漏</b>
+        close_lag_1 = close.shift(1)
+        ret_lag_1 = ret_1d.shift(1)
+    end note
+    
+    :计算相对强度;
+    note right
+        close_to_ma5_lag_1
+        close_to_ma20_lag_1
+    end note
+    
+    :计算动量特征;
+    note right
+        momentum_lag_1_5
+        momentum_lag_1_10
+    end note
+    
+    :创建衍生特征;
+    note right
+        price_position_20d
+        amount_ratio
+        涨跌停标记
+    end note
+}
+
+partition "6. 数据验证" #LIGHTPINK {
+    |DataValidator|
+    
+    :完整性检查;
+    note right
+        • 检查缺失值
+        • 检查重复行
+        • 检查日期范围
+        • 统计股票数量
+    end note
+    
+    :数据泄漏检查;
+    note right
+        • 验证滞后特征
+        • 确认 lag_1 = shift(1)
+        • 检查未来数据
+    end note
+    
+    :一致性检查;
+    note right
+        • high >= low
+        • close 在 [low, high]
+        • volume >= 0
+        • 时间序列连续性
+    end note
+    
+    :生成质量报告;
+}
+
+partition "7. 保存结果" #LIGHTYELLOW {
+    |Pipeline|
+    :保存特征矩阵;
+    note right
+        features_raw.parquet
+    end note
+    
+    :保存特征列名清单;
+    note right
+        feature_columns.txt
+    end note
+    
+    :保存质量报告;
+    note right
+        data_quality_report.txt
+    end note
+}
+
+|用户|
+:返回特征矩阵 DataFrame;
+stop
+
+@enduml

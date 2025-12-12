@@ -1,0 +1,45 @@
+# QuantClassic Transformer 基础配置模板
+# 使用Transformer模型进行时序预测
+
+experiment_name: transformer_basic_exp
+
+task:
+  # 模型配置
+  model:
+    class: Transformer
+    module_path: quantclassic.model.pytorch_models
+    kwargs:
+      d_feat: 20              # 输入特征维度
+      d_model: 64             # Transformer隐藏维度
+      nhead: 4                # 多头注意力头数
+      num_layers: 2           # Transformer层数
+      dropout: 0.1            # Dropout率
+      n_epochs: 100           # 训练轮数
+      lr: 0.001               # 学习率
+      early_stop: 20          # 早停patience
+      batch_size: 256         # 批大小
+      metric: mse             # 优化指标
+      
+  # 数据集配置
+  dataset:
+    class: DataManager
+    module_path: quantclassic.data_set.manager
+    kwargs:
+      config:
+        base_dir: rq_data_parquet
+        window_size: 20       # 时间窗口
+        train_ratio: 0.6      # 训练集比例
+        val_ratio: 0.2        # 验证集比例
+        batch_size: 256
+        shuffle: true
+        num_workers: 4
+        
+  # 回测配置 (可选)
+  backtest:
+    class: BacktestSystem
+    module_path: quantclassic.backtest.backtest_system
+    kwargs:
+      config:
+        initial_capital: 1000000
+        benchmark: csi300
+        max_positions: 50

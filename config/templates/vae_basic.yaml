@@ -1,0 +1,53 @@
+# QuantClassic VAE (Variational Autoencoder) 基础配置模板
+# VAE模型特别适合因子提取和异常检测
+
+experiment_name: vae_basic_exp
+
+task:
+  # 模型配置
+  model:
+    class: VAE
+    module_path: quantclassic.model.pytorch_models
+    kwargs:
+      d_feat: 20              # 输入特征维度
+      hidden_dim: 128         # 隐藏层维度
+      latent_dim: 16          # 潜在空间维度
+      window_size: 40         # 时间窗口
+      dropout: 0.3            # Dropout率
+      
+      # VAE损失权重
+      alpha_recon: 0.1        # 重构损失权重
+      beta_kl: 0.001          # KL散度损失权重
+      gamma_pred: 1.0         # 预测损失权重
+      
+      # 训练参数
+      n_epochs: 50            # 训练轮数
+      lr: 0.001               # 学习率
+      early_stop: 10          # 早停patience
+      batch_size: 256         # 批大小
+      metric: mse             # 优化指标
+      
+  # 数据集配置
+  dataset:
+    class: DataManager
+    module_path: quantclassic.data_set.manager
+    kwargs:
+      config:
+        base_dir: rq_data_parquet
+        window_size: 40       # 时间窗口（需与模型一致）
+        train_ratio: 0.6      # 训练集比例
+        val_ratio: 0.2        # 验证集比例
+        batch_size: 256
+        shuffle: true
+        num_workers: 4
+        
+  # 回测配置 (可选)
+  backtest:
+    class: BacktestSystem
+    module_path: quantclassic.backtest.backtest_system
+    kwargs:
+      config:
+        initial_capital: 1000000
+        benchmark: csi300
+        n_groups: 10
+        save_plots: true

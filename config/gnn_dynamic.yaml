@@ -1,0 +1,163 @@
+# =============================================================================
+# 动态图神经网络配置 (gnn_dynamic.yaml)
+# =============================================================================
+# 
+# 本配置文件用于配置动态图构建和日批次训练
+# 
+# 与静态图的区别：
+#   静态图：预先构建一次邻接矩阵，所有训练/推理共用
+#   动态图：每个交易日实时构建邻接矩阵，捕捉时变关系
+#
+# 使用方法：
+#   from quantclassic.model.modular_config import CompositeModelConfig
+#   config = CompositeModelConfig.from_yaml('configs/gnn_dynamic.yaml')
+# =============================================================================
+
+# =============================================================================
+# 1. 数据加载器配置
+# =============================================================================
+dataloader:
+  type: daily  # 'daily' = 日批次模式 | 'standard' = 传统模式
+  batch_size: 1  # 日批次模式下固定为1（每天一个batch）
+  shuffle_dates: true  # 是否打乱日期顺序（训练时推荐true）
+  num_workers: 0  # 日批次模式建议单进程
+  
+  # 窗口配置
+  window_size: 20  # 时间序列窗口大小（交易日）
+  
+  # 窗口变换（研报标准）
+  enable_window_transform: true
+  window_price_log: true  # 价格对数变换: log(price/close_T)
+  window_volume_norm: true  # 成交量窗口标准化: volume/mean(volume)
+  price_cols: ['open', 'high', 'low', 'close', 'vwap']
+  close_col: 'close'
+  volume_cols: ['vol', 'amount']
+  
+  # 标签处理
+  label_rank_normalize: true  # 截面排名标准化
+  label_rank_output_range: [-1, 1]
+
+
+# =============================================================================
+# 2. 图构建器配置
+# =============================================================================
+graph_builder:
+  # 图类型：'corr' | 'industry' | 'hybrid'
+  type: hybrid
+  
+  # === 相关性图参数 ===
+  corr_method: cosine  # 'pearson' | 'spearman' | 'cosine'
+  top_k: 10  # 每只股票保留 top_k 个邻居
+  threshold: 0.0  # 相关性阈值（仅保留 > threshold 的边）
+  
+  # === 行业图参数 ===
+  industry_col: industry_name
+  industry_adj_path: null  # 预计算的行业邻接矩阵路径（可选）
+  # 如需使用预计算矩阵：
+  # industry_adj_path: output/industry_adj_matrix.pt
+  
+  # === 混合图参数 ===
+  alpha: 0.7  # 混合权重: A = alpha * A_corr + (1-alpha) * A_industry
+  
+  # === 通用参数 ===
+  stock_col: order_book_id
+  add_self_loop: true
+  normalize: false  # GAT 内部会做 softmax，通常不需要预先归一化
+  symmetric: true  # 对称化邻接矩阵
+  
+  # === 缓存配置（加速历史回测）===
+  enable_cache: false
+  cache_dir: logs/cache/graphs
+
+
+# =============================================================================
+# 3. 时序模块配置
+# =============================================================================
+temporal:
+  rnn_type: lstm  # 'lstm' | 'gru'
+  hidden_size: 64
+  num_layers: 2
+  use_attention: true
+  attention_type: self
+  dropout: 0.2
+  use_residual: true  # 残差连接
+
+
+# =============================================================================
+# 4. 图模块配置
+# =============================================================================
+graph:
+  enabled: true
+  gat_type: standard  # 'standard' | 'v2'
+  hidden_dim: 64
+  heads: 4
+  dropout: 0.2
+  use_residual: true
+  # 注意：动态图模式下不使用 top_k_neighbors（由 graph_builder 控制）
+
+
+# =============================================================================
+# 5. 融合模块配置
+# =============================================================================
+fusion:
+  hidden_sizes: [128, 64]
+  activation: relu
+  dropout: 0.2
+  output_dim: 8  # 多因子输出维度 F (研报建议 4~16)
+
+
+# =============================================================================
+# 6. 训练配置
+# =============================================================================
+training:
+  n_epochs: 20
+  early_stop: 5
+  learning_rate: 0.001
+  optimizer: adam
+  
+  # 学习率调度
+  use_scheduler: true
+  scheduler_type: plateau
+  scheduler_patience: 3
+  scheduler_factor: 0.5
+  scheduler_min_lr: 1e-6
+  
+  # 相关性正则化
+  lambda_corr: 0.01
+  
+  # 推理模式
+  graph_inference_mode: daily  # 'daily' = 每日动态构图
+
+
+# =============================================================================
+# 7. 备选配置模板
+# =============================================================================
+# 
+# --- 纯相关性图 ---
+# graph_builder:
+#   type: corr
+#   corr_method: pearson
+#   top_k: 15
+#   threshold: 0.3
+# 
+# --- 纯行业图 ---
+# graph_builder:
+#   type: industry
+#   industry_col: industry_name
+#   industry_adj_path: output/industry_adj_matrix.pt
+# 
+# --- 高频交易（小窗口 + cosine相似度）---
+# dataloader:
+#   window_size: 5
+# graph_builder:
+#   type: corr
+#   corr_method: cosine
+#   top_k: 5
+# 
+# --- 低频调仓（大窗口 + 混合图）---
+# dataloader:
+#   window_size: 60
+# graph_builder:
+#   type: hybrid
+#   alpha: 0.5
+#   top_k: 20

@@ -1,0 +1,174 @@
+@startuml data_loader_component_diagram
+
+!define LIGHTORANGE #FFE4B5
+!define LIGHTBLUE #E6F3FF
+!define LIGHTGREEN #E8F5E9
+!define LIGHTPURPLE #F3E5F5
+!define LIGHTYELLOW #FFFACD
+
+title 量化数据获取工具 - 组件图
+
+' 外部系统
+cloud "米筐API" as rq_api {
+    interface "rqdatac" as rqdatac_api
+}
+
+database "文件系统" as filesystem {
+    folder "rq_data_parquet" as data_dir {
+        folder "basic_data" as basic_dir
+        folder "daily_data" as daily_dir
+        file "features_raw.parquet" as features_file
+        file "data_quality_report.txt" as report_file
+    }
+}
+
+' 配置层
+package "配置层" LIGHTYELLOW {
+    component [config.yaml] as config_yaml
+    component [ConfigManager] as config_mgr
+    
+    config_yaml .down.> config_mgr : 加载
+}
+
+' 数据获取层
+package "数据获取层" LIGHTBLUE {
+    component [DataFetcher] as fetcher
+    
+    interface "获取接口" as fetch_api
+    fetcher -up- fetch_api
+    
+    note right of fetcher
+        <b>职责</b>
+        • 连接米筐API
+        • 批处理获取数据
+        • 自动重试机制
+        • API限流控制
+        
+        <b>获取数据</b>
+        • 股票列表
+        • 交易日历
+        • 行业分类
+        • 价格数据
+        • 估值数据
+        • 股本数据
+    end note
+}
+
+' 数据处理层
+package "数据处理层" LIGHTGREEN {
+    component [DataProcessor] as processor
+    
+    interface "处理接口" as process_api
+    processor -up- process_api
+    
+    note right of processor
+        <b>职责</b>
+        • 数据清洗
+        • 数据合并
+        • 基础字段计算
+        
+        <b>特征工程</b>
+        • 技术指标
+        • 滞后特征
+        • 衍生特征
+        • 移动平均
+        • 波动率
+        • 动量因子
+    end note
+}
+
+' 数据验证层
+package "数据验证层" LIGHTPURPLE {
+    component [DataValidator] as validator
+    
+    interface "验证接口" as validate_api
+    validator -up- validate_api
+    
+    note right of validator
+        <b>职责</b>
+        • 完整性检查
+        • 数据泄漏检查
+        • 一致性检查
+        • 样本验证
+        
+        <b>质量报告</b>
+        • 缺失值统计
+        • 异常值检测
+        • 逻辑验证
+        • 质量评分
+    end note
+}
+
+' 主控制层
+package "主控制层" LIGHTORANGE {
+    component [QuantDataPipeline] as pipeline
+    
+    interface "用户接口" as user_api
+    pipeline -up- user_api
+    
+    note right of pipeline
+        <b>主要方法</b>
+        • run_full_pipeline()
+        • run_incremental_update()
+        • run_custom_universe()
+        • load_existing_data()
+        • get_data_summary()
+        
+        <b>执行步骤</b>
+        1. 获取基础数据
+        2. 获取日频数据
+        3. 合并数据
+        4. 特征工程
+        5. 数据验证
+        6. 保存结果
+    end note
+}
+
+' 用户层
+actor User as user
+
+' 关系定义
+user --> user_api : 调用
+
+pipeline ..> config_mgr : 使用
+pipeline --> fetch_api : 调用
+pipeline --> process_api : 调用
+pipeline --> validate_api : 调用
+
+fetcher ..> config_mgr : 读取配置
+processor ..> config_mgr : 读取配置
+validator ..> config_mgr : 读取配置
+
+fetcher --> rqdatac_api : API调用
+fetcher --> basic_dir : 保存基础数据
+fetcher --> daily_dir : 保存日频数据
+
+processor --> features_file : 保存特征矩阵
+validator --> report_file : 保存质量报告
+
+' 数据流向
+note as data_flow
+    <b>数据流向</b>
+    
+    米筐API → DataFetcher → 原始数据文件
+              ↓
+    原始数据 → DataProcessor → 特征矩阵
+              ↓
+    特征矩阵 → DataValidator → 质量报告
+end note
+
+' 配置流向
+note as config_flow
+    <b>配置流向</b>
+    
+    config.yaml → ConfigManager → 各模块配置
+    
+    配置项:
+    • 时间范围
+    • 股票池
+    • 数据字段
+    • 特征参数
+    • 存储设置
+end note
+
+@enduml
