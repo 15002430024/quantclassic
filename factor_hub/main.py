@@ -11,14 +11,15 @@ Usage:
     python main.py
     
     或者作为模块运行:
-    python -m factor_hub.main
+    python -m quantclassic.factor_hub.main
 """
 
 import os
 import sys
 
-# 添加项目路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 添加项目根目录到 Python 路径
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+sys.path.insert(0, project_root)
 
 from datetime import datetime
 from typing import List
@@ -26,10 +27,10 @@ from typing import List
 import pandas as pd
 
 # 导入 FactorHub 组件
-from factor_hub.factors import demo_factors  # noqa: 触发因子注册
-from factor_hub.providers.mock_provider import MockDataProvider
-from factor_hub.engine.factor_engine import FactorEngine
-from factor_hub.io.writers import CSVWriter, ParquetWriter, FactorWriterFactory
+from quantclassic.factor_hub.factors import demo_factors  # noqa: 触发因子注册
+from quantclassic.factor_hub.providers.mock_provider import MockDataProvider
+from quantclassic.factor_hub.engine.factor_engine import FactorEngine
+from quantclassic.factor_hub.io.writers import CSVWriter, ParquetWriter, FactorWriterFactory
 
 
 def run_factor_pipeline(
@@ -175,7 +176,7 @@ def main():
     
     START_DATE = "2024-01-01"
     END_DATE = "2024-03-31"
-    OUTPUT_DIR = "/home/u2025210237/jupyterlab/quantclassic/factor_hub/output"
+    OUTPUT_DIR = "./quantclassic/factor_hub/output"
     
     # 运行流水线
     factors_df = run_factor_pipeline(

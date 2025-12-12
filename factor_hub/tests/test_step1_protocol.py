@@ -8,10 +8,14 @@ Step 1 验证脚本 - 验证标准化协议与数据接入层
 """
 
 import sys
-sys.path.insert(0, "/home/u2025210237/jupyterlab/quantclassic")
+import os
 
-from factor_hub.providers.mock_provider import MockDataProvider
-from factor_hub.protocols import StandardDataProtocol, DataValidationError
+# 添加项目根目录到 Python 路径
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+sys.path.insert(0, project_root)
+
+from quantclassic.factor_hub.providers.mock_provider import MockDataProvider
+from quantclassic.factor_hub.protocols import StandardDataProtocol, DataValidationError
 
 
 def main():

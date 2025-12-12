@@ -14,7 +14,7 @@ from typing import List, Optional, Union, Any
 
 import pandas as pd
 
-from factor_hub.providers import BaseDataAdapter, DataFetchError
+from quantclassic.factor_hub.providers import BaseDataAdapter, DataFetchError
 
 
 class DataFetchAdapter(BaseDataAdapter):
@@ -179,8 +179,8 @@ class DataProviderFactory:
     """
     
     _providers = {
-        "mock": "factor_hub.providers.mock_provider.MockDataProvider",
-        "datafetch": "factor_hub.providers.datafetch_adapter.DataFetchAdapter",
+        "mock": "quantclassic.factor_hub.providers.mock_provider.MockDataProvider",
+        "datafetch": "quantclassic.factor_hub.providers.datafetch_adapter.DataFetchAdapter",
     }
     
     @classmethod
@@ -195,7 +195,7 @@ class DataProviderFactory:
         Returns:
             数据提供者实例
         """
-        from factor_hub.providers.mock_provider import MockDataProvider
+        from quantclassic.factor_hub.providers.mock_provider import MockDataProvider
         
         if provider_type == "mock":
             return MockDataProvider(**kwargs)

@@ -17,12 +17,12 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from factor_hub.protocols import StandardDataProtocol, DataValidationError
-from factor_hub.providers import IDataProvider
-from factor_hub.factors import BaseFactor, factor_registry
+from quantclassic.factor_hub.protocols import StandardDataProtocol, DataValidationError
+from quantclassic.factor_hub.providers import IDataProvider
+from quantclassic.factor_hub.factors import BaseFactor, factor_registry
 
 if TYPE_CHECKING:
-    from factor_hub.io.writers import IFactorWriter
+    from quantclassic.factor_hub.io.writers import IFactorWriter
 
 
 # 设置日志

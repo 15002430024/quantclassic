@@ -12,7 +12,7 @@ from typing import List, Optional, Union
 import pandas as pd
 import numpy as np
 
-from factor_hub.providers import BaseDataAdapter
+from quantclassic.factor_hub.providers import BaseDataAdapter
 
 
 class MockDataProvider(BaseDataAdapter):
