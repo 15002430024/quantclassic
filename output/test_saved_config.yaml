@@ -1,0 +1,31 @@
+quantclassic_init:
+  log_level: INFO
+task:
+  model:
+    class: LSTM
+    module_path: quantclassic.model.pytorch_models
+    kwargs:
+      d_feat: 20
+      hidden_size: 64
+      num_layers: 2
+      dropout: 0.3
+      n_epochs: 100
+      lr: 0.001
+      early_stop: 10
+      batch_size: 256
+      metric: loss
+  dataset:
+    class: DataManager
+    module_path: quantclassic.data_set.manager
+    kwargs:
+      config:
+        base_dir: rq_data_parquet
+        window_size: 20
+        train_ratio: 0.6
+        val_ratio: 0.2
+        batch_size: 256
+        shuffle: true
+  backtest:
+    n_groups: 10
+    save_plots: true
+    output_dir: output/backtest
