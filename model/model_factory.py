@@ -174,6 +174,94 @@ def init_instance_by_config(config: Dict[str, Any]):
     return ModelFactory.create_model(config)
 
 
+def create_model_from_composite_config(config, d_feat: int = None):
+    """
+    🆕 从 CompositeModelConfig 创建模型
+    
+    这是推荐的模型创建入口，统一使用 CompositeModelConfig。
+    
+    Args:
+        config: CompositeModelConfig 对象或字典
+        d_feat: 输入特征维度（可选，覆盖配置中的值）
+        
+    Returns:
+        模型实例
+        
+    Example:
+        from quantclassic.model.modular_config import CompositeModelConfig
+        from quantclassic.model.model_factory import create_model_from_composite_config
+        
+        config = CompositeModelConfig(
+            temporal=TemporalModuleConfig(rnn_type='lstm', hidden_size=64),
+            graph=GraphModuleConfig(enabled=True, gat_type='standard'),
+            d_feat=20
+        )
+        model = create_model_from_composite_config(config)
+    """
+    # 如果是字典，尝试转换为 CompositeModelConfig
+    if isinstance(config, dict):
+        try:
+            from .modular_config import CompositeModelConfig
+            config = CompositeModelConfig.from_dict(config)
+        except Exception as e:
+            logging.warning(f"无法将字典转换为 CompositeModelConfig: {e}")
+            # 回退到旧的工厂方法
+            return ModelFactory.create_model(config)
+    
+    # 验证配置
+    if hasattr(config, 'validate'):
+        config.validate()
+    
+    # 根据配置创建对应模型
+    use_graph = getattr(config, 'graph', None) and getattr(config.graph, 'enabled', False)
+    
+    if use_graph:
+        from .hybrid_graph_models import HybridGraphModel
+        return HybridGraphModel.from_config(config, d_feat=d_feat)
+    else:
+        # 非图模型，使用基础 LSTM/GRU
+        temporal_config = getattr(config, 'temporal', None)
+        if temporal_config:
+            rnn_type = getattr(temporal_config, 'rnn_type', 'lstm')
+            if rnn_type == 'lstm':
+                from .pytorch_models import LSTMModel
+                return LSTMModel(
+                    d_feat=d_feat or config.d_feat,
+                    hidden_size=temporal_config.hidden_size,
+                    num_layers=temporal_config.num_layers,
+                    dropout=temporal_config.dropout,
+                    n_epochs=config.n_epochs,
+                    batch_size=config.batch_size,
+                    lr=config.learning_rate,
+                    early_stop=config.early_stop,
+                    device=config.device,
+                )
+            elif rnn_type == 'gru':
+                from .pytorch_models import GRUModel
+                return GRUModel(
+                    d_feat=d_feat or config.d_feat,
+                    hidden_size=temporal_config.hidden_size,
+                    num_layers=temporal_config.num_layers,
+                    dropout=temporal_config.dropout,
+                    n_epochs=config.n_epochs,
+                    batch_size=config.batch_size,
+                    lr=config.learning_rate,
+                    early_stop=config.early_stop,
+                    device=config.device,
+                )
+        
+        # 默认回退到 LSTM
+        from .pytorch_models import LSTMModel
+        return LSTMModel(
+            d_feat=d_feat or getattr(config, 'd_feat', 20),
+            n_epochs=getattr(config, 'n_epochs', 100),
+            batch_size=getattr(config, 'batch_size', 256),
+            lr=getattr(config, 'learning_rate', 0.001),
+            early_stop=getattr(config, 'early_stop', 20),
+            device=getattr(config, 'device', 'cuda'),
+        )
+
+
 if __name__ == '__main__':
     print("=" * 80)
     print("Model Factory 测试")

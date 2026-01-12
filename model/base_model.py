@@ -180,6 +180,7 @@ class PyTorchModel(Model):
         early_stop: int = 20,
         optimizer: str = 'adam',
         loss_fn: str = 'mse',
+        loss_kwargs: Optional[Dict[str, Any]] = None,  # 🆕 损失函数额外参数 (e.g., Huber的delta)
         # 🆕 学习率调度器参数
         use_scheduler: bool = True,
         scheduler_type: str = 'plateau',  # 'plateau' | 'cosine' | 'step' | None
@@ -216,6 +217,7 @@ class PyTorchModel(Model):
         self.early_stop = early_stop
         self.optimizer_name = optimizer.lower()
         self.loss_fn_name = loss_fn.lower()
+        self.loss_kwargs = loss_kwargs or {}  # 🆕 保存损失函数额外参数
         
         # 模型和优化器（子类中初始化）
         self.model = None
@@ -239,7 +241,7 @@ class PyTorchModel(Model):
         self.valid_losses = []
         self.lr_history = []  # 🆕 记录学习率变化
         self.best_score = float('-inf')
-        self.best_epoch = 0
+        self.best_epoch = None  # 🆕 改为 None，区分"无验证集"场景
         
         self.logger.info(f"初始化 PyTorchModel:")
         self.logger.info(f"  设备: {self.device}")
@@ -253,6 +255,7 @@ class PyTorchModel(Model):
     
     def _get_optimizer(self):
         """创建优化器"""
+        # replace_string_in_file: diff test comment
         if self.optimizer_name == 'adam':
             return torch.optim.Adam(self.model.parameters(), lr=self.lr)
         elif self.optimizer_name == 'sgd':
@@ -343,6 +346,61 @@ class PyTorchModel(Model):
         if new_lr != current_lr:
             self.logger.info(f"  📉 学习率调整: {current_lr:.2e} → {new_lr:.2e}")
     
+    def _parse_batch_data(self, batch_data):
+        """
+        🆕 智能解析 Batch 数据
+        
+        支持多种格式：
+        - (x, y): 基础格式
+        - (x, y, adj): 带邻接矩阵
+        - (x, y, adj, idx): 带邻接矩阵和股票索引
+        - (x, y, adj, stock_ids, date): DailyGraphDataLoader 完整格式
+        
+        Args:
+            batch_data: DataLoader 返回的 batch 数据
+            
+        Returns:
+            (x, y, adj, idx) - 特征、标签、邻接矩阵、股票索引
+            如果对应元素不存在，则返回 None
+        """
+        if isinstance(batch_data, dict):
+            # 字典格式 - 使用 in 检查而非 or 链
+            x = batch_data.get('x')
+            if x is None:
+                x = batch_data.get('features')
+            if x is None:
+                x = batch_data.get('input')
+            
+            y = batch_data.get('y')
+            if y is None:
+                y = batch_data.get('labels')
+            if y is None:
+                y = batch_data.get('target')
+            
+            adj = batch_data.get('adj')
+            if adj is None:
+                adj = batch_data.get('adj_matrix')
+            
+            idx = batch_data.get('stock_idx')
+            if idx is None:
+                idx = batch_data.get('idx')
+            
+            return x, y, adj, idx
+        
+        if isinstance(batch_data, (list, tuple)):
+            if len(batch_data) == 2:
+                return batch_data[0], batch_data[1], None, None
+            elif len(batch_data) == 3:
+                return batch_data[0], batch_data[1], batch_data[2], None
+            elif len(batch_data) == 4:
+                return batch_data[0], batch_data[1], batch_data[2], batch_data[3]
+            elif len(batch_data) >= 5:
+                # DailyGraphDataLoader 格式: (X, y, adj, stock_ids, date)
+                return batch_data[0], batch_data[1], batch_data[2], batch_data[3]
+        
+        # 单个 tensor 的情况（极少）
+        return batch_data, None, None, None
+    
     def _get_loss_fn(self):
         """
         创建损失函数（🆕 支持相关性正则化）
@@ -360,20 +418,27 @@ class PyTorchModel(Model):
                 loss_type = self.loss_fn_name
                 if loss_type in ['mse', 'mae', 'huber', 'ic']:
                     loss_type = f"{loss_type}_corr"
-                return get_loss_fn(loss_type=loss_type, lambda_corr=self.lambda_corr)
+                # 🆕 透传 loss_kwargs
+                return get_loss_fn(loss_type=loss_type, lambda_corr=self.lambda_corr, **self.loss_kwargs)
             except ImportError:
                 self.logger.warning("无法导入 loss 模块，回退到标准损失函数")
                 self._use_corr_loss = False
         
-        # 标准损失函数
-        if self.loss_fn_name == 'mse':
-            return torch.nn.MSELoss()
-        elif self.loss_fn_name == 'mae':
-            return torch.nn.L1Loss()
-        elif self.loss_fn_name == 'huber':
-            return torch.nn.HuberLoss()
-        else:
-            raise ValueError(f"Unknown loss function: {self.loss_fn_name}")
+        # 🆕 标准损失函数 - 支持参数透传
+        try:
+            if self.loss_fn_name == 'mse':
+                return torch.nn.MSELoss(**{k: v for k, v in self.loss_kwargs.items() if k in ['reduction']})
+            elif self.loss_fn_name == 'mae':
+                return torch.nn.L1Loss(**{k: v for k, v in self.loss_kwargs.items() if k in ['reduction']})
+            elif self.loss_fn_name == 'huber':
+                # HuberLoss 支持 delta 和 reduction 参数
+                return torch.nn.HuberLoss(**{k: v for k, v in self.loss_kwargs.items() if k in ['delta', 'reduction']})
+            else:
+                raise ValueError(f"Unknown loss function: {self.loss_fn_name}")
+        except TypeError as e:
+            raise ValueError(
+                f"Invalid loss_kwargs for {self.loss_fn_name}: {self.loss_kwargs}. Error: {e}"
+            )
     
     def save_model(self, save_path: str, save_optimizer: bool = False):
         """
@@ -435,7 +500,7 @@ class PyTorchModel(Model):
     
     def _train_epoch(self, train_loader):
         """
-        训练一个 epoch（🆕 支持相关性正则化）
+        训练一个 epoch（🆕 支持相关性正则化 + 动态图）
         
         Args:
             train_loader: 训练数据加载器
@@ -448,14 +513,22 @@ class PyTorchModel(Model):
             模型需要返回 (predictions, hidden_features) 元组。
             可通过 model(x, return_hidden=True) 实现。
             如果模型不支持，会自动降级并发出警告。
+            
+            🆕 支持 DataLoader 传入的 adj 邻接矩阵。
         """
         self.model.train()
         total_loss = 0
         n_batches = 0
         
-        for batch_x, batch_y in train_loader:
+        for batch_data in train_loader:
+            # 🆕 使用统一的 batch 解析，支持多种格式
+            batch_x, batch_y, adj, idx = self._parse_batch_data(batch_data)
+            
             batch_x = batch_x.to(self.device)
             batch_y = batch_y.to(self.device)
+            
+            # 🆕 被动接收：优先用 batch 的 adj，否则用静态 adj
+            input_adj = adj.to(self.device) if adj is not None else getattr(self, 'static_adj', None)
             
             # 前向传播
             self.optimizer.zero_grad()
@@ -464,7 +537,12 @@ class PyTorchModel(Model):
             if self._use_corr_loss:
                 # 需要隐藏特征用于相关性正则化
                 try:
-                    output = self.model(batch_x, return_hidden=True)
+                    # 尝试传递 adj（如果模型支持）
+                    try:
+                        output = self.model(batch_x, adj=input_adj, return_hidden=True)
+                    except TypeError:
+                        output = self.model(batch_x, return_hidden=True)
+                    
                     if isinstance(output, tuple) and len(output) >= 2:
                         predictions = output[0]
                         hidden_features = output[-1]  # 最后一个是融合特征
@@ -488,7 +566,10 @@ class PyTorchModel(Model):
                         self._use_corr_loss = False
                         self._corr_loss_disabled_logged = True
                         # 回退到普通前向传播
-                        predictions = self.model(batch_x)
+                        try:
+                            predictions = self.model(batch_x, adj=input_adj)
+                        except TypeError:
+                            predictions = self.model(batch_x)
                         hidden_features = None
                     else:
                         # 其他 TypeError，重新抛出
@@ -500,7 +581,11 @@ class PyTorchModel(Model):
                 else:
                     loss = self.criterion(predictions, batch_y)
             else:
-                predictions = self.model(batch_x)
+                # 🆕 尝试传递 adj（如果模型支持）
+                try:
+                    predictions = self.model(batch_x, adj=input_adj)
+                except TypeError:
+                    predictions = self.model(batch_x)
                 loss = self.criterion(predictions, batch_y)
             
             # 反向传播
@@ -515,7 +600,7 @@ class PyTorchModel(Model):
     
     def _valid_epoch(self, valid_loader):
         """
-        验证一个 epoch（🆕 支持相关性正则化）
+        验证一个 epoch（🆕 支持相关性正则化 + 动态图）
         
         Args:
             valid_loader: 验证数据加载器
@@ -528,14 +613,24 @@ class PyTorchModel(Model):
         n_batches = 0
         
         with torch.no_grad():
-            for batch_x, batch_y in valid_loader:
+            for batch_data in valid_loader:
+                # 🆕 使用统一的 batch 解析
+                batch_x, batch_y, adj, idx = self._parse_batch_data(batch_data)
+                
                 batch_x = batch_x.to(self.device)
                 batch_y = batch_y.to(self.device)
+                
+                # 🆕 被动接收：优先用 batch 的 adj，否则用静态 adj
+                input_adj = adj.to(self.device) if adj is not None else getattr(self, 'static_adj', None)
                 
                 # 🆕 根据是否使用相关性正则化决定前向传播方式
                 if self._use_corr_loss:
                     try:
-                        output = self.model(batch_x, return_hidden=True)
+                        try:
+                            output = self.model(batch_x, adj=input_adj, return_hidden=True)
+                        except TypeError:
+                            output = self.model(batch_x, return_hidden=True)
+                        
                         if isinstance(output, tuple) and len(output) >= 2:
                             predictions = output[0]
                             hidden_features = output[-1]
@@ -550,7 +645,10 @@ class PyTorchModel(Model):
                                     f"⚠️ 模型不支持 return_hidden 参数，相关性正则化已自动禁用。"
                                 )
                             self._use_corr_loss = False
-                            predictions = self.model(batch_x)
+                            try:
+                                predictions = self.model(batch_x, adj=input_adj)
+                            except TypeError:
+                                predictions = self.model(batch_x)
                             hidden_features = None
                         else:
                             raise
@@ -560,13 +658,109 @@ class PyTorchModel(Model):
                     else:
                         loss = self.criterion(predictions, batch_y)
                 else:
-                    predictions = self.model(batch_x)
+                    try:
+                        predictions = self.model(batch_x, adj=input_adj)
+                    except TypeError:
+                        predictions = self.model(batch_x)
                     loss = self.criterion(predictions, batch_y)
                 
                 total_loss += loss.item()
                 n_batches += 1
         
         return total_loss / n_batches if n_batches > 0 else 0
+
+    # ==================== 🆕 统一 predict 方法 ====================
+    
+    def predict(self, test_loader, return_numpy: bool = True):
+        """
+        🆕 统一预测方法（2026-01-11 重构）
+        
+        复用 `_parse_batch_data` 支持多种 batch 格式，子类可通过覆写
+        `_forward_for_predict()` 和 `_post_process()` 钩子来扩展。
+        
+        Args:
+            test_loader: 测试数据加载器
+            return_numpy: 是否返回 numpy 数组（默认 True）
+            
+        Returns:
+            预测结果（numpy 或 torch.Tensor）
+            
+        Raises:
+            ValueError: 如果模型未训练
+            
+        Example:
+            >>> predictions = model.predict(test_loader)  # numpy array
+            >>> predictions = model.predict(test_loader, return_numpy=False)  # tensor
+        """
+        if not self.fitted:
+            raise ValueError("模型未训练，请先调用 fit()")
+        
+        self.model.eval()
+        predictions = []
+        
+        with torch.no_grad():
+            for batch_data in test_loader:
+                # 🆕 使用统一的 batch 解析，支持 (x,y), (x,y,adj,...), dict 等格式
+                batch_x, _, adj, idx = self._parse_batch_data(batch_data)
+                
+                # 迁移到设备
+                batch_x = batch_x.to(self.device)
+                input_adj = adj.to(self.device) if adj is not None else getattr(self, 'static_adj', None)
+                
+                # 🆕 调用可覆写的前向传播钩子
+                pred = self._forward_for_predict(batch_x, adj=input_adj, idx=idx)
+                
+                # 🆕 调用可覆写的后处理钩子
+                pred = self._post_process(pred)
+                
+                predictions.append(pred.cpu())
+        
+        # 处理空预测列表（测试集为空时）
+        if len(predictions) == 0:
+            import numpy as np
+            return np.array([]) if return_numpy else torch.tensor([])
+        
+        predictions = torch.cat(predictions, dim=0)
+        
+        if return_numpy:
+            return predictions.numpy()
+        return predictions
+    
+    def _forward_for_predict(self, x, adj=None, idx=None):
+        """
+        🆕 预测时的前向传播钩子（可覆写）
+        
+        默认行为：尝试带 adj 调用，失败则只传 x。
+        子类可覆写此方法以实现特殊前向逻辑（如 VAE 的多输出、HybridGraph 的复杂解析）。
+        
+        Args:
+            x: 输入特征 tensor
+            adj: 邻接矩阵（可选）
+            idx: 股票索引（可选）
+            
+        Returns:
+            模型预测输出 tensor
+        """
+        try:
+            return self.model(x, adj=adj)
+        except TypeError:
+            # 模型不支持 adj 参数
+            return self.model(x)
+    
+    def _post_process(self, pred):
+        """
+        🆕 预测后处理钩子（可覆写）
+        
+        默认行为：直接返回预测结果。
+        子类可覆写此方法以实现特殊后处理（如还原尺度、聚合多头输出）。
+        
+        Args:
+            pred: 模型原始输出 tensor
+            
+        Returns:
+            处理后的预测 tensor
+        """
+        return pred
 
 
 class FineTunableModel(Model):

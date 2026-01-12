@@ -1,0 +1,544 @@
+
+
+# 📊 QuantClassic 架构文档
+
+### 单一数据源 · 配置驱动的端到端量化研究与回测流水线
+
+[![Status](https://img.shields.io/badge/status-active-success.svg)]()
+[![Documentation](https://img.shields.io/badge/docs-up--to--date-blue.svg)]()
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)]()
+
+</div>
+
+---
+
+## 📖 文档导读
+
+> 💡 **核心目标**：让新人快速理解端到端链路，避免破坏数据/配置 Schema，并便于排查问题
+
+| 板块 | 说明 |
+|------|------|
+| 🎯 **适用场景** | 新增或调整数据源、预处理、数据集、模型、回测、实验追踪等全链路开发 |
+| 🗺️ **快速导航** | [系统架构](#1-系统架构) · [数据流](#2-数据流) · [模块详情](#3-模块详情) · [修改指南](#4-修改指南) · [版本历史](#5-版本历史) |
+| ⚠️ **核心约束** | 单一数据源、配置驱动(YAML/CLI)，训练/回测全程通过 workflow.R 记录产物 |
+| 📦 **关键产物** | `features_raw.*` · `feature_columns.txt` · `preprocessor.pkl` · `output/experiments/*` |
+
+---
+
+## 🏗️ 1. 系统架构
+
+```mermaid
+flowchart LR
+    subgraph Orchestration["编排层"]
+        cfg["config/\nConfigLoader + TaskRunner + CLI(qcrun)"]
+        wf["workflow/\nQCRecorder (R) + ExpManager"]
+    end
+
+    subgraph Data["数据层"]
+        fetch["data_fetch/\nQuantDataPipeline\n(ConfigManager, DataFetcher,\nDataProcessor, DataValidator, ResumeManager)"]
+        monitor["data_monitor/\n静态/动态泄漏检测"]
+    end
+
+    subgraph Feature["特征与数据集"]
+        prep["data_processor/\nDataPreprocessor + FeatureProcessor"]
+        dm["data_set/\nDataManager + Loader/Factory + Splitter"]
+    end
+
+    subgraph Modeling["建模与评估"]
+        mdl["model/\nModelFactory + PyTorchModel 系列 + Trainers"]
+        fh["factor_hub/\nFactorRegistry + BaseFactor"]
+        bt["backtest/\nFactorBacktestSystem\n(Generator/Processor/IC/Portfolio/Perf/Visualizer)"]
+    end
+
+    out["output/ & cache/\n特征、模型、回测、实验记录"]
+
+    cfg --> fetch
+    fetch --> prep
+    prep --> dm
+    dm --> mdl
+    monitor --> prep
+    monitor --> dm
+    mdl --> bt
+    fh --> bt
+    cfg -. log params/metrics .-> wf
+    mdl -. train metrics .-> wf
+    bt -. bt metrics .-> wf
+    wf --> out
+    bt --> out
+    dm --> out
+```
+
+---
+
+## 🔄 2. 数据流
+
+```mermaid
+flowchart LR
+    raw[(外部行情/基本面源\nClickHouse/缓存文件)]
+    basic[基础数据获取\n股票列表/交易日历/行业]
+    daily[日频数据获取\n价格/估值/股本]
+    merge[数据合并\n基础字段计算]
+    feat[特征工程\nfactor & 统计特征]
+    quality[数据验证\n缺失/异常/一致性]
+    store[落地 features_raw.*\nfeature_columns.txt]
+    preprocess[预处理与中性化\nwinsorize/z-score/rank]
+    split[时间/滚动划分\ntrain/val/test]
+    loaders[DataLoader 构建\n常规/滚动/日批次/图数据]
+    train[模型训练\n早停/滚动/动态图]
+    predict[预测/潜在因子输出]
+    backtest[回测与IC分析\n组合构建/绩效评估/可视化]
+    record[实验记录\nworkflow.R 保存参数/指标/对象]
+    reports[输出产物\n模型、指标、图表、报告、缓存]
+
+    raw --> basic --> daily --> merge --> feat --> quality --> store
+    store --> preprocess --> split --> loaders --> train --> predict --> backtest --> record --> reports
+```
+
+## 3. 模块详情
+
+| 模块 | 职责 | 关键组件/类 | 输入 | 输出 |
+|------|------|-------------|------|------|
+| `config/` | YAML/CLI 驱动端到端任务，组装数据、模型、回测并对接 workflow | `ConfigLoader`, `TaskRunner`, `cli.py (qcrun)`, `TaskConfig` | `task` 配置、模板 | 初始化的 `DataManager`/模型、训练/回测结果，自动记录到 `workflow` |
+| `data_fetch/` | 抓取并缓存行情/基本面，构建基础特征矩阵 | `ConfigManager`, `QuantDataPipeline`, `DataFetcher`, `DataProcessor`, `DataValidator`, `ResumeManager` | 时间段、股票池、字段与存储配置 | `features_raw.*`、`feature_columns.txt`、数据质量报告 |
+| `data_processor/` | 因子/特征预处理与中性化 | `PreprocessConfig`, `ProcessingStep`, `DataPreprocessor`, `FeatureProcessor` | 原始或抓取后的特征列 | 归一化/去极值/中性化后的特征，持久化的预处理器状态 |
+| `data_set/` | 训练数据管理与切分，提供 DataLoader | `DataManager`, `FeatureEngineer`, `DataLoaderEngine`, `create_splitter`, `DatasetFactory`, `LoaderCollection` | 预处理特征、标签列、划分策略 | 训练/验证/测试 DataFrame，常规/滚动/日批次/图 DataLoader，特征统计 |
+| `data_monitor/` | 数据泄漏检测与质量监控 | `StaticLeakageDetector`, `DynamicLeakageDetector`, `leakage_detection_config.py` | 数据帧、时间/分组字段 | 泄漏与质量报告，警告日志 |
+| `factor_hub/` | 因子协议与注册中心 | `StandardDataProtocol`, `FactorRegistry`, `BaseFactor`, providers/writers | 标准化行情数据 | 可调用的因子集合、导出写入器产物 |
+| `model/` | 模型定义与训练工具链 | `ModelFactory`, `PyTorchModel` 系列、`rolling_daily_trainer.py`, `dynamic_graph_trainer.py`, `model_config.py` | DataLoader/图数据、模型配置 | 训练好的模型、预测值/潜在因子、最佳指标、模型文件 |
+| `backtest/` | 因子/策略回测与可视化 | `FactorBacktestSystem`, `FactorGenerator`, `FactorProcessor`, `ICAnalyzer`, `PortfolioBuilder`, `PerformanceEvaluator`, `ResultVisualizer` | 因子/预测值、价格数据、回测配置 | 绩效指标、IC统计、多空组合收益、图表 |
+| `workflow/` | 实验追踪与对象管理 | `QCRecorder (R)`, `ExpManager`, `Experiment`, `Recorder`, `recorder.py` | 训练/回测期间的参数、指标、对象 | `output/experiments` 下的 params/metrics/objects 索引与存档 |
+| `output/` `cache/` | 结果与缓存落地 | 文件系统目录 | 各阶段产物 | 复现所需的模型、数据、报告、缓存 |
+
+
+### 3.0 常用调用路径
+
+- 配置：`config/ConfigLoader` 解析 YAML/CLI 生成 `TaskConfig`
+- 数据：`data_fetch.QuantDataPipeline.run_full_pipeline` 产出 features_raw.* 与 feature_columns.txt
+- 预处理：`data_processor.DataPreprocessor.fit_transform` 生成预处理数据与 `preprocessor.pkl`
+- 数据集：`data_set.DataManager.create_datasets` + `get_dataloaders` 构建 Dataset/DataLoader（含滚动/动态图）
+- 训练与预测：`ModelFactory` 创建模型，`PyTorchModel`/`RollingDailyTrainer`/`DynamicGraphTrainer` 训练并输出预测/潜在因子
+- 回测与记录：可选 `backtest.run_backtest`，最终通过 `workflow.R` 写入 `output/experiments`
+
+---
+
+### 3.1 config/TaskRunner（编排入口）
+
+| 属性 | 值 |
+|------|-----|
+| 路径 | `config/runner.py`, `config/cli.py` |
+| 职责 | 解析 YAML/TaskConfig，初始化数据、模型，可选回测，并通过 `workflow.R` 记录实验 |
+| 依赖 | `data_set`, `model`, `backtest`, `workflow` |
+
+**输入Schema**:
+```python
+TaskConfig | Dict{
+    task: {
+        model: {class: str, module_path: str, kwargs: dict},
+        dataset: {class: str, kwargs: {config: DataConfig|dict}},
+        backtest?: dict,
+        trainer_class?: Literal["RollingDailyTrainer","DynamicGraphTrainer"],
+        trainer_kwargs?: dict
+    },
+    experiment_name?: str,
+    recorder_name?: str
+}
+```
+
+**输出Schema**:
+```python
+Dict[
+    model: Model,
+    dataset: LoaderCollection|Any,
+    data_manager: DataManager|None,
+    rolling_loaders: Optional[RollingDailyLoaderCollection],
+    daily_loaders: Optional[DailyLoaderCollection],
+    train_results: Dict[str, Any],
+    backtest_results: Dict[str, Any],
+    experiment_name: str
+]
+```
+
+**核心逻辑**:
+```python
+config_dict = _adapt_task_config_to_legacy(config)
+dataset, dm = self._init_dataset(config_dict["task"]["dataset"])
+model = self._init_model(config_dict["task"]["model"])
+train_results = self._train_model(model, dataset, config_dict["task"])
+backtest_results = self._run_backtest(model, dataset, config_dict["task"].get("backtest", {}))
+R.log_params(...); R.log_metrics(...); R.save_objects(model=model, results=results)
+```
+
+**主要函数**:
+- `run(config: Union[Dict, TaskConfig], experiment_name: str, recorder_name: str=None) -> Dict`
+- `_init_dataset(dataset_config: Dict|BaseConfig) -> Tuple[Any, DataManager|None]`
+- `_init_model(model_config: Dict|BaseConfig) -> Any`
+- `_train_model(model, dataset, task_cfg: Dict) -> Dict`
+- `_train_rolling(model, rolling_loaders, trainer_kwargs: Dict) -> Dict`
+- `_train_dynamic_graph(model, daily_loaders, trainer_kwargs: Dict) -> Dict`
+- `_run_backtest(model, dataset, backtest_cfg: Dict) -> Dict`
+
+---
+
+### 3.2 data_fetch/QuantDataPipeline（数据获取）
+
+| 属性 | 值 |
+|------|-----|
+| 路径 | `data_fetch/pipeline.py` |
+| 职责 | 按配置抓取基础/日频数据，合并行业与估值，构建特征并校验，落地 `features_raw.*` |
+| 依赖 | `DataFetcher`, `DataProcessor`, `DataValidator`, `ResumeManager`, `ConfigManager` |
+
+**输入Schema**:
+```python
+ConfigManager(
+    time.start_date: str,
+    time.end_date: str,
+    universe.universe_type: Literal["index","custom","all"],
+    universe.custom_stocks?: List[str],
+    fields.price: List[str], fields.valuation: List[str], fields.share: List[str],
+    storage.save_dir: str, storage.file_format: Literal["parquet","csv","hdf5"]
+)
+```
+
+**输出Schema**:
+```python
+DataFrame[
+    order_book_id: str,
+    trade_date: datetime64,
+    open: float, high: float, low: float, close: float,
+    vol: float, amount: float, vwap?: float,
+    pct_chg: float, pre_close: float, amplitude: float,
+    turnover_rate?: float, volume_ratio: float,
+    ret_{1,5,10,20}d: float, vol_{20}d: float,
+    ma_close_{5,20,60}d: float, ma_vol_{5,20,60}d: float,
+    close_lag_{1,5,10,20}: float, ret_lag_{1,5,10,20}: float,
+    close_to_ma{5,20}_lag_1: float, momentum_lag_1_{5,10}: float,
+    price_position_20d: float, amount_ratio: float,
+    industry?: str, limit_up?: float, limit_down?: float, is_limit_up?: int, is_limit_down?: int
+]
+```
+
+**核心逻辑**:
+```python
+def run_full_pipeline(steps=None, save_intermediate=True, validate=True):
+    _fetch_basic_data()   # 股票列表/交易日历/行业
+    _fetch_daily_data()   # 价格/估值/股本 (断点续传)
+    _merge_data()         # 合并并算 pct_chg/pre_close/turnover_rate/volume_ratio
+    _build_features()     # 技术指标/滞后/衍生
+    _validate_data()      # DataValidator.run_full_validation
+    _save_final_data()    # features_raw.{fmt} + feature_columns.txt
+```
+
+**主要函数**:
+- `run_full_pipeline(steps: List[str]=None, save_intermediate: bool=True, validate: bool=True) -> pd.DataFrame`
+- `run_incremental_update(update_date: str) -> None`
+- `run_custom_universe(custom_stocks: List[str]) -> None`
+- `_merge_data(price, valuation, share) -> pd.DataFrame`
+- `_build_features(df) -> pd.DataFrame`
+
+---
+
+### 3.3 data_processor/DataPreprocessor（预处理与中性化）
+
+| 属性 | 值 |
+|------|-----|
+| 路径 | `data_processor/data_preprocessor.py`, `data_processor/preprocess_config.py`, `data_processor/feature_processor.py`, `data_processor/label_generator.py` |
+| 职责 | 按配置串行执行去极值、缺失值填充、标准化/归一化、行业/市值中性化、标签生成与 SimStock 标签中性化；支持训练/推理分离和状态持久化 |
+| 依赖 | `PreprocessConfig`, `ProcessingStep`, `FeatureProcessor`, `LabelGenerator`, `BaseConfig` |
+
+**模块结构**:
+```mermaid
+flowchart LR
+    cfg[PreprocessConfig\n(pipeline_steps/id/groupby/column_mapping\nlabel_config/neutralize_config)] --> dp[DataPreprocessor\nfit/transform/save/load]
+    dp --> fp[FeatureProcessor\nz-score/minmax/rank\nwinsorize/clip\nfillna/neutralize]
+    dp --> lg[LabelGenerator\nmulti-period labels]
+    dp --> state[preprocessor.pkl\nconfig + fitted_params + feature_columns]
+```
+
+**输入Schema**:
+```python
+DataFrame[
+    trade_date: datetime64,
+    order_book_id: str,
+    ts_code?: str,
+    industry_name?: str,
+    total_mv?: float,
+    feature_*: float,          # 自动推断: 数值列，排除 id/industry/label 前缀
+    y_ret_*?: float,           # 生成/使用的标签
+    target_column?: float      # SimStock 中性化所需
+]
+PreprocessConfig(
+    pipeline_steps: List[ProcessingStep],
+    id_columns: List[str]=['order_book_id','trade_date'],
+    groupby_columns: List[str]=['trade_date'],
+    column_mapping: Dict[str,str],
+    label_config: LabelGeneratorConfig,
+    neutralize_config: NeutralizeConfig
+)
+```
+
+**输出Schema**:
+```python
+DataFrame[
+    trade_date: datetime64,
+    order_book_id: str,
+    feature_*: float,          # 经 winsorize/fillna/neutralize/normalize 后
+    y_ret_*?: float,           # 生成的标签
+    alpha_label?: float        # SimStock 标签中性化输出
+]
+preprocessor.pkl  # 保存 config + FeatureProcessor.fitted_params + feature_columns + id_columns
+```
+
+**核心逻辑**:
+```python
+def fit_transform(df, feature_columns=None, target_column=None):
+    features = feature_columns or infer_numeric_features(df, exclude=id/industry/label patterns)
+    id_cols = [c for c in config.id_columns if c in df] or ['order_book_id','trade_date']
+    for step in enabled(config.pipeline_steps):
+        required = _get_required_columns(step.method, step.params)
+        if missing(required, df): continue
+        process_features = _get_process_features(step, features, df)
+        if not process_features and step.method not in {GENERATE_LABELS, SIMSTOCK_LABEL_NEUTRALIZE}: continue
+        df = feature_processor.handle_infinite_values(df, process_features)
+        dispatch(step.method):
+            GENERATE_LABELS -> LabelGenerator(label_config|params).generate_labels(...)
+            WINSORIZE/CLIP -> FeatureProcessor.winsorize_features|clip_features
+            FILLNA_* -> FeatureProcessor.handle_missing_values(industry-aware)
+            Z_SCORE/MINMAX/RANK -> FeatureProcessor.(z_score|minmax|rank)_normalize(save params when fit)
+            OLS_NEUTRALIZE/MEAN_NEUTRALIZE -> FeatureProcessor.industry_cap_neutralize_ols|mean
+            SIMSTOCK_LABEL_NEUTRALIZE -> FeatureProcessor.simstock_label_neutralize(target_column required)
+    is_fitted = True
+```
+
+**主要函数**:
+- `DataPreprocessor.fit_transform(df: pd.DataFrame, feature_columns: List[str]=None, target_column: str=None) -> pd.DataFrame`
+- `DataPreprocessor.transform(df: pd.DataFrame, target_column: str=None) -> pd.DataFrame`（复用已保存的统计量）
+- `DataPreprocessor.save(path: str) -> None`, `DataPreprocessor.load(path: str) -> DataPreprocessor`
+- `DataPreprocessor.get_pipeline_summary() -> pd.DataFrame`, `validate_data(df: pd.DataFrame) -> Dict`
+- `PreprocessConfig.add_step(name: str, method: Union[str, ProcessMethod], features: Union[str,List[str],None]=None, enabled: bool=True, **params) -> PreprocessConfig`
+- 预设模板：`PreprocessTemplates.basic_pipeline() | advanced_pipeline() | alpha_pipeline()`
+
+---
+
+### 3.4 data_set/DataManager（数据集与加载器）
+
+| 属性 | 值 |
+|------|-----|
+| 路径 | `data_set/manager.py` |
+| 职责 | 加载预处理后数据、特征选择、数据划分、构建 Dataset/DataLoader（含滚动与动态图模式） |
+| 依赖 | `DataConfig`, `DataLoaderEngine`, `FeatureEngineer`, `DatasetFactory`, `splitter` |
+
+**输入Schema**:
+```python
+DataFrame[
+    trade_date: datetime64,
+    ts_code: str,                    # stock_col
+    y_processed: float,              # label_col
+    feature_*: float,
+    industry_name?: str,
+    total_mv?: float
+]
+DataConfig(
+    window_size: int,
+    split_strategy: Literal["time_series","rolling","random","stratified"],
+    train_ratio/val_ratio/test_ratio: float,
+    batch_size: int,
+    graph_builder_config?: Dict
+)
+```
+
+**输出Schema**:
+```python
+DatasetCollection(
+    train: TimeSeriesStockDataset,
+    val: TimeSeriesStockDataset,
+    test: TimeSeriesStockDataset|DailyBatchDataset
+)
+LoaderCollection(
+    train: DataLoader[Tensor(batch, window, features), Tensor(batch)],
+    val: DataLoader,
+    test: DataLoader
+)
+rolling_windows?: List[Tuple[pd.DataFrame, pd.DataFrame]]
+```
+
+**核心逻辑**:
+```python
+raw = load_raw_data()
+feature_cols = preprocess_features(raw)
+train_df, val_df, test_df = splitter.split(df[label_non_na])
+datasets = DatasetFactory.create_datasets(train_df, val_df, test_df, feature_cols,
+    test_valid_label_start_date=calc_start_date_for_rolling())
+loaders = datasets.get_loaders(batch_size=config.batch_size, num_workers=config.num_workers)
+```
+
+**主要函数**:
+- `run_full_pipeline(file_path: str=None) -> LoaderCollection`
+- `create_datasets(df: pd.DataFrame=None, feature_cols: List[str]=None, split_strategy: str=None) -> DatasetCollection`
+- `get_dataloaders(batch_size: int=None, num_workers: int=None, shuffle_train: bool=None) -> LoaderCollection`
+- `create_daily_loaders(graph_builder_config: Dict=None, shuffle_dates: bool=None, device: str='cuda')`
+- `create_rolling_daily_loaders(graph_builder_config: Dict=None)`
+- `save_state(path: str) / load_state(path: str)`
+
+---
+
+### 3.5 model/ModelFactory + Trainers（模型与训练）
+
+| 属性 | 值 |
+|------|-----|
+| 路径 | `model/model_factory.py`, `model/pytorch_models.py`, `model/rolling_daily_trainer.py`, `model/dynamic_graph_trainer.py` |
+| 职责 | 创建并训练 LSTM/GRU/Transformer/VAE 等模型，支持滚动窗口与动态图训练，管理早停与模型保存 |
+| 依赖 | `torch`, `DataManager` loaders, `workflow.R` |
+
+**输入Schema**:
+```python
+DataLoader[
+    X: FloatTensor[batch, window, n_features],
+    y: FloatTensor[batch]
+]
+Model config dict:
+{
+  class: "LSTM"|"GRU"|"Transformer"|"VAE"|custom,
+  kwargs: {d_feat:int, hidden_size:int, num_layers:int, dropout:float, n_epochs:int, lr:float, ...}
+}
+Rolling/Dynamic trainer kwargs (optional): {n_epochs:int, save_dir:str, warm_start:bool, ...}
+```
+
+**输出Schema**:
+```python
+Dict[
+    metrics: Dict[str, float],           # best_metrics if available
+    predictions: np.ndarray|pd.DataFrame,
+    model: TrainedModel,
+    trainer?: RollingDailyTrainer|DynamicGraphTrainer,
+    latent_features?: np.ndarray         # VAE
+]
+model_state.pth                         # 保存的最佳模型
+```
+
+**核心逻辑**:
+```python
+model = ModelFactory.create(model_cfg)
+model.fit(train_loader, val_loader)            # 早停/梯度裁剪/调度
+if rolling: RollingDailyTrainer.fit(rolling_loaders, n_epochs, save_dir)
+if dynamic: DynamicGraphTrainer.fit(daily_loaders.train, daily_loaders.val, n_epochs)
+pred = model.predict(test_loader)
+```
+
+**主要函数**:
+- `ModelFactory.create_model(config: Dict) -> Model`
+- `PyTorchModel.fit(train_loader, valid_loader=None, save_path=None) -> Dict`
+- `PyTorchModel.predict(loader, return_numpy=True) -> np.ndarray`
+- `RollingDailyTrainer.fit(loaders, n_epochs: int, save_dir: str) -> Dict`
+- `DynamicGraphTrainer.fit(train_loader, val_loader, n_epochs: int, save_path: str) -> Dict`
+
+---
+
+### 3.6 backtest/FactorBacktestSystem（回测与评估）
+
+| 属性 | 值 |
+|------|-----|
+| 路径 | `backtest/backtest_system.py` 及子模块 |
+| 职责 | 基于因子或模型预测构建组合，计算 IC/收益/风险指标并生成可视化 |
+| 依赖 | `FactorGenerator`, `FactorProcessor`, `PortfolioBuilder`, `ICAnalyzer`, `PerformanceEvaluator`, `ResultVisualizer` |
+
+**输入Schema**:
+```python
+DataFrame[
+    trade_date: datetime64,
+    order_book_id: str,
+    factor|pred: float,            # 单因子或多列因子
+    label?: float,                 # 可选，用于对照
+    price_fields?: float           # 价格/权重计算所需
+]
+BacktestConfig(n_groups: int=10, rebalance_freq: str='monthly', weight_method: str='equal',
+               industry_neutral: bool=False, consider_cost: bool=False, save_plots: bool=True)
+```
+
+**输出Schema**:
+```python
+Dict[
+    metrics: {
+        ic_stats: {ic_mean: float, ic_ir: float, win_rate: float},
+        performance_metrics: {
+            long_short: {annual_return: float, sharpe_ratio: float, max_drawdown: float, vol: float},
+            group_returns: Dict[int, float]
+        }
+    },
+    plots: List[pathlib.Path]
+]
+```
+
+**核心逻辑**:
+```python
+factor_df = factor_generator.generate_factors(df)
+processed = factor_processor.process(factor_df)
+ic_df = ic_analyzer.calculate_ic(processed)
+ports = portfolio_builder.build_portfolios(processed, n_groups=config.n_groups)
+perf = performance_evaluator.evaluate_portfolio(ports["long_short"], cost=config.cost)
+result_visualizer.save_all(ports, ic_df, perf, save_dir=config.output_dir)
+```
+
+**主要函数**:
+- `run_backtest(predictions: pd.DataFrame=None, **cfg) -> Dict`
+- `FactorGenerator.generate_factors(df: pd.DataFrame) -> pd.DataFrame`
+- `ICAnalyzer.calculate_ic(df: pd.DataFrame) -> pd.DataFrame`
+- `PerformanceEvaluator.evaluate_portfolio(df: pd.DataFrame, cost: float=0.0) -> Dict`
+
+---
+
+### 3.7 workflow/QCRecorder（实验追踪）
+
+| 属性 | 值 |
+|------|-----|
+| 路径 | `workflow/qc_recorder.py`, `workflow/recorder.py` |
+| 职责 | 统一的实验上下文管理，记录参数/指标/对象到 `output/experiments` |
+| 依赖 | `ExpManager`, `Experiment`, `Recorder` |
+
+**输入Schema**:
+```python
+experiment_name: str,
+recorder_name?: str,
+params: Dict[str, Any],
+metrics: Dict[str, Union[int, float, Sequence]],
+objects: Dict[str, Any]              # 模型/配置/预测/图表路径等
+```
+
+**输出Schema**:
+```python
+output/experiments/{experiment}/
+    index.json
+    recorder_*/metadata.json
+    recorder_*/params.json
+    recorder_*/metrics.json
+    recorder_*/objects/{model.pkl, config.pkl, plots/...}
+```
+
+**核心逻辑**:
+```python
+with R.start(experiment_name, recorder_name, resume=False, **params):
+    R.log_params(...)
+    R.log_metrics(step=epoch, loss=loss, ic=ic)
+    R.save_objects(model=model, config=config, predictions=pred_df)
+```
+
+**主要函数**:
+- `R.start(experiment_name: str, recorder_name: str=None, resume: bool=False, **params)`
+- `R.log_params(**params)`, `R.log_metrics(step: int=None, **metrics)`
+- `R.save_objects(**objects)`, `R.load_object(experiment_name, recorder_id, object_name)`
+- `R.list_experiments()`, `R.list_recorders(experiment_name)`, `R.search_recorders(...)`
+
+## 4. 修改指南
+- **新增/修改数据源**：仅改 `data_fetch`，保持输出 Schema（价格/估值/股本/行业字段）稳定；若字段变更，同步更新 3.2 输入/输出 Schema 与下游 `data_processor`/`data_set`。
+- **调整预处理/中性化**：修改 `data_processor` 管线或 `PreprocessConfig`；更新 3.3 核心逻辑代码块与输出 Schema。
+- **数据划分或窗口策略**：在 `data_set` 里变更 `split_strategy`/`window_size`/`graph_builder_config`；同步 3.4 输入/输出 Schema 与函数签名。
+- **新增模型或训练方式**: 在 `model` 注册新类或 trainer；更新 3.5 主要函数/输出说明。
+- **回测指标或组合逻辑**：修改 `backtest` 组件；更新 3.6 核心逻辑与输出 Schema。
+- **实验记录要求**：任何训练/回测需通过 `workflow.R`，保证 params/metrics/objects 落地；若目录结构调整，更新 3.7 输出 Schema。
+
+## 5. 版本历史
+
+| 日期 | 变更 | 影响模块 |
+|------|------|----------|
+| 2026-01-05 | 初始化系统级架构文档，梳理数据获取→预处理→数据集→建模→回测→实验追踪全链路 | config/, data_fetch/, data_processor/, data_set/, model/, workflow/, backtest/, factor_hub/, data_monitor/ |
+| 2026-01-05 | 按最新 architecture-sync skill 补充核心模块 Schema、核心逻辑代码块、函数签名与修改指南 | ARCHITECTURE.md |
+| 2026-01-05 | 更新 `data_processor/` 架构：补充模块结构图、输入/输出 Schema、核心逻辑与主要函数，保持与实现同步 | data_processor/ |

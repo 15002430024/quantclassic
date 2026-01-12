@@ -34,21 +34,36 @@ class WindowProcessConfig:
         price_columns: 需要进行对数变换的价格列
         volume_columns: 需要进行均值标准化的成交量列
         close_column: 收盘价列名（作为价格变换的基准）
-        stock_column: 股票代码列名
-        time_column: 时间列名
+        stock_column: 股票代码列名（兼容 order_book_id/ts_code）
+        time_column: 时间列名（兼容 trade_date/date）
         keep_original: 是否保留原始列（True则创建新列，False则覆盖）
         suffix: 变换后列名后缀（仅当keep_original=True时使用）
         min_window_ratio: 窗口内有效数据的最小比例（低于此比例则跳过）
+        
+    ⚠️ 重要提示（防止重复转换）:
+        窗口转换可以在两个地方执行：
+        1. data_processor/WindowProcessor（离线预处理）
+        2. data_set/factory.py 的 TimeSeriesStockDataset（运行时转换）
+        
+        请确保只在其中一处执行，否则会导致特征变形！
+        
+        推荐方案：
+        - 如果使用 DatasetFactory 创建 Dataset，设置 enable_window_transform=False
+        - 或者不使用 WindowProcessor，让 Dataset 在运行时处理（更灵活）
     """
     window_size: int = 60
     price_columns: List[str] = field(default_factory=lambda: ['open', 'high', 'low', 'close', 'vwap'])
     volume_columns: List[str] = field(default_factory=lambda: ['vol', 'amount'])
     close_column: str = 'close'
-    stock_column: str = 'order_book_id'
-    time_column: str = 'trade_date'
+    stock_column: str = 'order_book_id'  # 兼容 ts_code
+    time_column: str = 'trade_date'  # 兼容 date
     keep_original: bool = False
     suffix: str = '_log'
     min_window_ratio: float = 0.8
+
+
+# 全局标记：用于检测数据是否已经过窗口转换
+_WINDOW_TRANSFORM_MARKER = '__window_transformed__'
 
 
 class WindowProcessor:
@@ -66,6 +81,13 @@ class WindowProcessor:
        - 公式：volume_{t-i} / mean(volume_window)
        - 含义：将窗口内的成交量除以该窗口的平均成交量
        - 效果：数据变为倍数概念（如1.5倍均值）
+    
+    ⚠️ 防止重复转换：
+        本类与 data_set.factory.TimeSeriesStockDataset 中的窗口转换功能重叠。
+        请确保只使用其中一个！
+        
+        - 使用本类（离线模式）：适合固定窗口、一次性预处理
+        - 使用 Dataset（运行时模式）：适合动态窗口、灵活实验
     
     使用场景：
     - 场景1：在Dataset的__getitem__中使用（推荐）
@@ -89,12 +111,75 @@ class WindowProcessor:
             config: 窗口处理配置，如果为None则使用默认配置
         """
         self.config = config or WindowProcessConfig()
+        self._adapt_column_names()  # 自适应列名
         logger.info(f"初始化窗口处理器: window_size={self.config.window_size}")
+    
+    def _adapt_column_names(self, df: pd.DataFrame = None):
+        """
+        根据常见命名约定自适应列名
+        
+        Args:
+            df: 可选的数据框，如果提供则根据实际列名适配
+               如果不提供，仅在初始化时做基本校验
+        
+        Note:
+            - 初始化时不传 df，仅保留默认配置
+            - process_dataset 时传入 df，执行实际检测并更新 config
+        """
+        if df is None:
+            # 初始化阶段：无数据，跳过检测
+            return
+        
+        # 检测并适配股票列
+        if self.config.stock_column not in df.columns:
+            for col in ['order_book_id', 'ts_code', 'stock_code', 'symbol']:
+                if col in df.columns:
+                    logger.info(f"WindowProcessor: 股票列自适应 {self.config.stock_column} -> {col}")
+                    self.config.stock_column = col
+                    break
+        
+        # 检测并适配时间列
+        if self.config.time_column not in df.columns:
+            for col in ['trade_date', 'date', 'datetime', 'time']:
+                if col in df.columns:
+                    logger.info(f"WindowProcessor: 时间列自适应 {self.config.time_column} -> {col}")
+                    self.config.time_column = col
+                    break
+    
+    @staticmethod
+    def is_transformed(df: pd.DataFrame) -> bool:
+        """
+        检查数据是否已经过窗口转换
+        
+        Args:
+            df: 数据框
+            
+        Returns:
+            True 如果数据已经过转换
+        """
+        return hasattr(df, 'attrs') and df.attrs.get(_WINDOW_TRANSFORM_MARKER, False)
+    
+    @staticmethod
+    def mark_transformed(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        标记数据已经过窗口转换
+        
+        Args:
+            df: 数据框
+            
+        Returns:
+            标记后的数据框
+        """
+        if not hasattr(df, 'attrs'):
+            df.attrs = {}
+        df.attrs[_WINDOW_TRANSFORM_MARKER] = True
+        return df
     
     def process_window(
         self, 
         window_df: pd.DataFrame,
-        inplace: bool = False
+        inplace: bool = False,
+        skip_if_transformed: bool = True
     ) -> pd.DataFrame:
         """
         处理单个窗口的数据
@@ -104,6 +189,7 @@ class WindowProcessor:
         Args:
             window_df: 单个窗口的数据（已按时间排序）
             inplace: 是否原地修改
+            skip_if_transformed: 如果数据已转换，是否跳过（防止重复转换）
         
         Returns:
             处理后的窗口数据
@@ -116,6 +202,11 @@ class WindowProcessor:
                     window = self.processor.process_window(window)
                     return window
         """
+        # 防止重复转换
+        if skip_if_transformed and self.is_transformed(window_df):
+            logger.debug("数据已经过窗口转换，跳过处理")
+            return window_df
+        
         if not inplace:
             window_df = window_df.copy()
         
@@ -153,15 +244,24 @@ class WindowProcessor:
             else:
                 window_df[target_col] = np.nan
         
+        # 标记已转换
+        window_df = self.mark_transformed(window_df)
+        
         return window_df
     
     def process_dataset(
         self,
         df: pd.DataFrame,
-        show_progress: bool = True
+        show_progress: bool = True,
+        skip_if_transformed: bool = True
     ) -> pd.DataFrame:
         """
         处理整个数据集（按股票分组，滚动窗口处理）
+        
+        ⚠️ 重要提示：
+            此方法与 data_set.factory.TimeSeriesStockDataset 中的窗口转换功能重叠。
+            如果您使用 DatasetFactory 创建 Dataset 并启用了 enable_window_transform，
+            请不要使用此方法，否则会导致重复转换！
         
         注意：此方法会为每个时间点生成基于其过去window_size天的变换结果。
         这意味着：
@@ -171,6 +271,7 @@ class WindowProcessor:
         Args:
             df: 完整数据集（必须包含stock_column和time_column）
             show_progress: 是否显示进度条
+            skip_if_transformed: 如果数据已转换，是否跳过
         
         Returns:
             处理后的数据集
@@ -187,13 +288,29 @@ class WindowProcessor:
         print(f"  成交量列: {self.config.volume_columns}")
         print(f"  保留原始列: {self.config.keep_original}")
         
+        # 防止重复转换
+        if skip_if_transformed and self.is_transformed(df):
+            print("  ⚠️ 警告: 数据已经过窗口转换，跳过处理以防止重复转换")
+            logger.warning("数据已经过窗口转换，跳过 process_dataset 以防止重复转换")
+            return df
+        
         df = df.copy()
         
+        # 🆕 使用统一的列名自适应方法（会更新 config）
+        self._adapt_column_names(df)
+        stock_col = self.config.stock_column
+        time_col = self.config.time_column
+        
+        if stock_col in df.columns:
+            print(f"  📝 股票列: {stock_col}")
+        if time_col in df.columns:
+            print(f"  📝 时间列: {time_col}")
+        
         # 确保按股票和时间排序
-        df = df.sort_values([self.config.stock_column, self.config.time_column])
+        df = df.sort_values([stock_col, time_col])
         
         # 获取所有股票
-        stocks = df[self.config.stock_column].unique()
+        stocks = df[stock_col].unique()
         print(f"  股票数量: {len(stocks)}")
         
         # 结果存储
@@ -203,7 +320,7 @@ class WindowProcessor:
         stock_iter = tqdm(stocks, desc="处理股票", unit="只") if show_progress else stocks
         
         for stock in stock_iter:
-            stock_df = df[df[self.config.stock_column] == stock].copy()
+            stock_df = df[df[stock_col] == stock].copy()
             stock_df = stock_df.reset_index(drop=True)
             
             n_rows = len(stock_df)

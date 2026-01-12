@@ -329,3 +329,100 @@ python -m config.cli config.yaml
 ---
 
 **开始你的第一个配置驱动实验吧！** 🚀
+---
+
+## 🆕 训练架构 (2026-01 重构)
+
+### 推荐训练器
+
+| 训练器 | 用途 | 适用场景 |
+|--------|------|----------|
+| `SimpleTrainer` | 常规单窗口训练 | 常规训练、验证 |
+| `RollingWindowTrainer` | 滚动窗口训练 | Walk-Forward 验证 |
+| `RollingDailyTrainer` | 日级滚动训练 | 高频模型切换、动态图 |
+
+### 示例: 滚动窗口训练
+
+```yaml
+experiment_name: rolling_training
+
+task:
+  # 数据配置
+  dataset:
+    class: DataManager
+    kwargs:
+      config:
+        base_dir: rq_data_parquet
+        split_strategy: rolling  # 启用滚动窗口
+        rolling_window_days: 60
+        rolling_test_days: 5
+  
+  # 模型配置
+  model:
+    class: HybridGraphModel
+    kwargs:
+      d_feat: 20
+      hidden_size: 64
+  
+  # 🆕 训练器配置
+  trainer_class: RollingDailyTrainer
+  use_rolling_loaders: true
+  trainer_kwargs:
+    n_epochs: 20
+    weight_inheritance: true   # 继承上一窗口权重
+    save_each_window: true     # 保存每个窗口模型
+    gc_interval: 5             # 显存清理间隔
+```
+
+### 示例: 动态图训练
+
+```yaml
+task:
+  dataset:
+    kwargs:
+      config:
+        graph_builder_config:
+          type: hybrid
+          alpha: 0.7
+          top_k: 10
+  
+  trainer_class: SimpleTrainer  # 或 RollingDailyTrainer
+  use_daily_loaders: true       # 启用日批次加载器
+  trainer_kwargs:
+    loss_fn: ic_corr            # IC损失 + 相关性正则
+    lambda_corr: 0.01
+```
+
+### Python API 示例
+
+```python
+from quantclassic.model.train import RollingDailyTrainer, RollingTrainerConfig
+from quantclassic.data_set import DataManager
+
+# 1. 准备数据
+dm = DataManager(config=data_config)
+dm.run_full_pipeline()
+rolling_loaders = dm.create_rolling_daily_loaders()
+
+# 2. 定义模型工厂
+def model_factory():
+    return MyModel(d_feat=len(dm.feature_cols))
+
+# 3. 创建训练器并训练
+config = RollingTrainerConfig(n_epochs=20, weight_inheritance=True)
+trainer = RollingDailyTrainer(model_factory, config)
+trainer.fit(rolling_loaders, save_dir='output/models')
+
+# 4. 获取预测
+predictions = trainer.get_all_predictions()
+```
+
+### ⚠️ 废弃 API
+
+以下 API 已废弃，请迁移到新训练架构:
+
+| 废弃 API | 替代方案 |
+|----------|----------|
+| `DataManager.create_rolling_window_trainer()` | `model.train.RollingWindowTrainer` |
+| `model.rolling_daily_trainer.RollingDailyTrainer` | `model.train.RollingDailyTrainer` |
+| `trainer_class='DynamicGraphTrainer'` | `trainer_class='SimpleTrainer'` |

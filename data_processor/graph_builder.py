@@ -46,6 +46,14 @@ class GraphBuilderConfig:
 
     管理动态图/静态图构建所需的全部参数，支持多种相似度算法、行业图、混合图以及缓存策略。
 
+    ⚠️ 重要提示（列名兼容性）:
+        stock_col 默认为 'order_book_id'，但 DataManager 默认使用 'ts_code'。
+        在使用 DailyGraphDataLoader 时，请确保 stock_col 与数据中的实际列名一致。
+        
+        推荐做法：
+        - 从 DataConfig 透传 stock_col 到 GraphBuilderConfig
+        - 或在创建 GraphBuilderConfig 时显式指定 stock_col='ts_code'
+
     Args:
         type (str): 图类型，默认 'corr'。
             - 'corr': 基于特征相似度/相关性的动态图
@@ -53,6 +61,7 @@ class GraphBuilderConfig:
             - 'hybrid': 混合图 = α * corr_graph + (1-α) * industry_graph
 
         stock_col (str): 股票代码列名，默认 'order_book_id'。
+            ⚠️ 注意：与 DataManager(ts_code) 集成时需要显式设置为 'ts_code'。
 
         corr_method (str): 相关性/相似度计算方法，默认 'pearson'。
             可选 'pearson'/'spearman'/'cosine'。
@@ -90,7 +99,7 @@ class GraphBuilderConfig:
     """
     # 基础配置
     type: str = 'corr'  # 'corr', 'industry', 'hybrid'
-    stock_col: str = 'order_book_id'
+    stock_col: str = 'order_book_id'  # 兼容 ts_code
     
     # 相关性图配置
     corr_method: str = 'pearson'  # 'pearson', 'spearman', 'cosine'
@@ -113,6 +122,55 @@ class GraphBuilderConfig:
     # 缓存配置
     cache_dir: Optional[str] = None  # 图缓存目录
     enable_cache: bool = False  # 是否启用缓存
+    
+    def adapt_stock_col(self, df: 'pd.DataFrame') -> str:
+        """
+        根据数据自动适配 stock_col
+        
+        Args:
+            df: 数据框
+            
+        Returns:
+            实际使用的股票代码列名
+        """
+        if self.stock_col in df.columns:
+            return self.stock_col
+        
+        # 尝试常见的列名
+        candidates = ['order_book_id', 'ts_code', 'stock_code', 'symbol', 'code']
+        for col in candidates:
+            if col in df.columns:
+                self.stock_col = col
+                return col
+        
+        raise ValueError(f"未找到股票代码列，尝试了: {candidates}")
+    
+    @classmethod
+    def from_data_config(cls, data_config: Any, **kwargs) -> 'GraphBuilderConfig':
+        """
+        从 DataConfig 创建 GraphBuilderConfig，自动透传 stock_col
+        
+        Args:
+            data_config: DataConfig 实例（来自 data_set.config）
+            **kwargs: 其他 GraphBuilderConfig 参数
+            
+        Returns:
+            GraphBuilderConfig 实例
+            
+        示例:
+            from data_set import DataConfig
+            from data_processor.graph_builder import GraphBuilderConfig
+            
+            data_config = DataConfig(stock_col='ts_code')
+            graph_config = GraphBuilderConfig.from_data_config(data_config, type='hybrid', top_k=10)
+        """
+        # 从 data_config 提取相关字段
+        stock_col = getattr(data_config, 'stock_col', 'ts_code')
+        
+        # 合并参数
+        merged_kwargs = {'stock_col': stock_col, **kwargs}
+        
+        return cls(**merged_kwargs)
     
     def to_dict(self) -> Dict:
         """转为字典"""
@@ -172,6 +230,9 @@ class GraphBuilder(ABC):
     图构建器抽象基类
     
     所有图构建器必须实现 __call__ 方法，接收当日数据，返回邻接矩阵。
+    
+    ⚠️ 这是构建图的统一入口（canonical path）。
+    model/build_industry_adj.py 等工具已标记为 deprecated，仅作为静态基准使用。
     """
     
     def __init__(self, config: Optional[GraphBuilderConfig] = None, **kwargs):
@@ -288,7 +349,8 @@ class CorrGraphBuilder(GraphBuilder):
         Returns:
             adj_matrix, stock_list, stock_to_idx
         """
-        stock_col = self.config.stock_col
+        # 自适应股票代码列名（兼容 ts_code 和 order_book_id）
+        stock_col = self.config.adapt_stock_col(df_day)
         feature_cols = feature_cols or self.config.feature_cols
         
         # 获取股票列表
@@ -464,7 +526,8 @@ class IndustryGraphBuilder(GraphBuilder):
         如果已加载预计算矩阵，则根据当日股票子集进行切片。
         否则动态构建。
         """
-        stock_col = self.config.stock_col
+        # 自适应股票代码列名
+        stock_col = self.config.adapt_stock_col(df_day)
         industry_col = self.config.industry_col
         
         # 获取当日股票列表
@@ -958,7 +1021,29 @@ class AdjMatrixUtils:
 
 
 class GraphBuilderFactory:
-    """图构建器工厂"""
+    """
+    图构建器工厂
+    
+    ⚠️ 这是构建动态图的统一入口（canonical path）。
+    训练和评估应统一使用此工厂创建图构建器。
+    model/build_industry_adj.py 等工具已标记为 deprecated。
+    
+    与 DataManager 集成示例:
+        from data_set import DataConfig
+        from data_processor.graph_builder import GraphBuilderConfig, GraphBuilderFactory
+        
+        # 方式1: 从 DataConfig 透传 stock_col
+        data_config = DataConfig(stock_col='ts_code')
+        graph_config = GraphBuilderConfig.from_data_config(data_config, type='hybrid', top_k=10)
+        builder = GraphBuilderFactory.create(graph_config)
+        
+        # 方式2: 手动指定（确保与数据列名一致）
+        builder = GraphBuilderFactory.create({
+            'type': 'hybrid',
+            'stock_col': 'ts_code',  # 与 DataManager 一致
+            'top_k': 10
+        })
+    """
     
     _registry = {
         'corr': CorrGraphBuilder,
@@ -970,19 +1055,27 @@ class GraphBuilderFactory:
     @classmethod
     def create(
         cls,
-        config: Union[Dict, GraphBuilderConfig, str]
+        config: Union[Dict, GraphBuilderConfig, str],
+        data_config: Any = None
     ) -> GraphBuilder:
         """
         创建图构建器
         
         Args:
             config: 配置字典、GraphBuilderConfig 或类型字符串
+            data_config: 可选，DataConfig 实例，用于自动透传 stock_col
             
         Returns:
             GraphBuilder 实例
         """
         if isinstance(config, str):
             config = {'type': config}
+        
+        # 如果提供了 data_config，透传 stock_col
+        if data_config is not None and isinstance(config, dict):
+            stock_col = getattr(data_config, 'stock_col', 'ts_code')
+            if 'stock_col' not in config:
+                config['stock_col'] = stock_col
         
         if isinstance(config, dict):
             builder_type = config.get('type', 'corr')

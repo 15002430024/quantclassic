@@ -204,14 +204,32 @@ class TaskRunner:
             if model is not None and dataset is not None:
                 self.logger.info("步骤 3/4: 训练模型...")
                 
-                # 🆕 根据配置选择训练方式
-                if task_config and task_config.trainer_class == 'RollingDailyTrainer' and rolling_loaders:
+                # 🆕 根据配置选择训练方式 (支持新训练架构)
+                trainer_class = task_config.trainer_class if task_config else ''
+                trainer_kwargs = task_config.trainer_kwargs if task_config else {}
+                
+                if trainer_class == 'RollingDailyTrainer' and rolling_loaders:
                     train_results = self._train_rolling(
-                        model, rolling_loaders, task_config.trainer_kwargs or {}
+                        model, rolling_loaders, trainer_kwargs or {}
                     )
-                elif task_config and task_config.trainer_class == 'DynamicGraphTrainer' and daily_loaders:
+                elif trainer_class == 'RollingWindowTrainer' and rolling_loaders:
+                    # 🆕 新增: 支持 RollingWindowTrainer
+                    train_results = self._train_rolling_window(
+                        model, rolling_loaders, trainer_kwargs or {}
+                    )
+                elif trainer_class == 'SimpleTrainer':
+                    # 🆕 新增: 支持 SimpleTrainer
+                    train_results = self._train_simple(
+                        model, dataset, trainer_kwargs or {}
+                    )
+                elif trainer_class == 'DynamicGraphTrainer' and daily_loaders:
+                    # ⚠️ DynamicGraphTrainer 已废弃，内部改用 SimpleTrainer
+                    self.logger.warning(
+                        "⚠️ trainer_class='DynamicGraphTrainer' 已废弃！\n"
+                        "   实际使用 SimpleTrainer 执行。建议改用 trainer_class='SimpleTrainer'。"
+                    )
                     train_results = self._train_dynamic_graph(
-                        model, daily_loaders, task_config.trainer_kwargs or {}
+                        model, daily_loaders, trainer_kwargs or {}
                     )
                 else:
                     train_results = self._train_model(model, dataset, config_dict['task'])
@@ -348,6 +366,127 @@ class TaskRunner:
         results['model'] = model
         return results
     
+    # ==================== 🆕 SimpleTrainer 训练方法 ====================
+    
+    def _train_simple(self, model, dataset, trainer_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        使用 SimpleTrainer 进行训练
+        
+        Args:
+            model: 模型
+            dataset: 数据集（需要有 train, val 属性）
+            trainer_kwargs: 训练器参数
+            
+        Returns:
+            训练结果字典
+        """
+        from ..model.train import SimpleTrainer, TrainerConfig
+        
+        self.logger.info("使用 SimpleTrainer 进行训练")
+        
+        # 获取底层 nn.Module
+        if hasattr(model, 'model'):
+            nn_model = model.model
+        else:
+            nn_model = model
+        
+        # 创建配置
+        config = TrainerConfig(**trainer_kwargs) if trainer_kwargs else TrainerConfig()
+        
+        # 创建训练器
+        trainer = SimpleTrainer(nn_model, config)
+        
+        # 获取数据加载器
+        train_loader = dataset.train if hasattr(dataset, 'train') else dataset
+        val_loader = dataset.val if hasattr(dataset, 'val') else None
+        test_loader = dataset.test if hasattr(dataset, 'test') else None
+        
+        # 训练
+        result = trainer.train(train_loader, val_loader)
+        
+        # 预测
+        if test_loader is not None:
+            predictions = trainer.predict(test_loader)
+            result['predictions'] = predictions
+        
+        result['model'] = model
+        result['trainer'] = trainer
+        
+        return result
+    
+    # ==================== 🆕 RollingWindowTrainer 训练方法 ====================
+    
+    def _train_rolling_window(self, model, rolling_loaders, trainer_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        使用 RollingWindowTrainer 进行滚动窗口训练
+        
+        Args:
+            model: 模型
+            rolling_loaders: 滚动窗口数据加载器
+            trainer_kwargs: 训练器参数
+            
+        Returns:
+            训练结果字典
+        """
+        from ..model.train import RollingWindowTrainer, RollingTrainerConfig
+        
+        self.logger.info("使用 RollingWindowTrainer 进行滚动窗口训练")
+        
+        # 获取底层 nn.Module
+        if hasattr(model, 'model'):
+            nn_model = model.model
+        else:
+            nn_model = model
+        
+        # 创建模型工厂
+        initial_model_copy = copy.deepcopy(nn_model)
+        
+        def model_factory():
+            return copy.deepcopy(initial_model_copy)
+        
+        # 🆕 修复: init_params 中的参数同时透传给 config
+        init_params = {'weight_inheritance', 'save_each_window', 'device'}
+        fit_params = {'save_dir', 'n_epochs'}
+        
+        init_kwargs = {}
+        fit_kwargs = {}
+        config_kwargs = {}
+        
+        for key, value in trainer_kwargs.items():
+            if key in init_params:
+                init_kwargs[key] = value
+                # 🆕 weight_inheritance 和 save_each_window 同时传入 config
+                if key in {'weight_inheritance', 'save_each_window'}:
+                    config_kwargs[key] = value
+            elif key in fit_params:
+                fit_kwargs[key] = value
+            else:
+                config_kwargs[key] = value
+        
+        # 创建配置
+        config = RollingTrainerConfig(**config_kwargs) if config_kwargs else RollingTrainerConfig()
+        
+        # 创建训练器
+        trainer = RollingWindowTrainer(
+            model_factory=model_factory,
+            config=config,
+            device=init_kwargs.get('device', 'cuda')
+        )
+        
+        # 训练
+        save_dir = fit_kwargs.get('save_dir', 'output/rolling_models')
+        n_epochs = fit_kwargs.get('n_epochs')
+        
+        results = trainer.train(rolling_loaders, n_epochs=n_epochs, save_dir=save_dir)
+        
+        # 获取预测
+        all_predictions = trainer.get_all_predictions()
+        results['predictions'] = all_predictions
+        results['model'] = model
+        results['trainer'] = trainer
+        
+        return results
+    
     def _run_backtest(self, model, dataset, backtest_config: Dict[str, Any]) -> Dict[str, Any]:
         """执行回测"""
         from ..backtest import BacktestSystem
@@ -370,21 +509,25 @@ class TaskRunner:
         """
         使用 RollingDailyTrainer 进行滚动窗口训练
         
-        🆕 修复:
-        1. 使用 copy.deepcopy 替代脆弱的反射机制
-        2. 正确拆分 trainer_kwargs 参数
+        🆕 重构: 使用新的 model/train/ 模块
         
         Args:
             model: 模型（需要是 nn.Module 或有 .model 属性）
             rolling_loaders: RollingDailyLoaderCollection
-            trainer_kwargs: 训练器参数（混合参数，需要拆分）
+            trainer_kwargs: 训练器参数
             
         Returns:
             训练结果字典
         """
-        from ..model.rolling_daily_trainer import RollingDailyTrainer, RollingTrainerConfig
+        # 🆕 优先使用新的训练架构
+        try:
+            from ..model.train import RollingDailyTrainer, RollingTrainerConfig
+            use_new_trainer = True
+        except ImportError:
+            from ..model.rolling_daily_trainer import RollingDailyTrainer, RollingTrainerConfig
+            use_new_trainer = False
         
-        self.logger.info("使用 RollingDailyTrainer 进行滚动窗口训练")
+        self.logger.info(f"使用 {'新' if use_new_trainer else '旧'} RollingDailyTrainer 进行滚动窗口训练")
         
         # 获取底层 nn.Module
         if hasattr(model, 'model'):
@@ -392,20 +535,23 @@ class TaskRunner:
         else:
             nn_model = model
         
-        # 🆕 修复: 使用 copy.deepcopy 创建模型工厂，替代脆弱的反射机制
-        # 保存初始状态的深拷贝
+        # 使用 copy.deepcopy 创建模型工厂
         initial_model_copy = copy.deepcopy(nn_model)
         
         def model_factory():
             """模型工厂：返回初始状态模型的深拷贝"""
             return copy.deepcopy(initial_model_copy)
         
-        # 🆕 修复: 拆分 trainer_kwargs
-        # RollingTrainerConfig 接受的参数
-        config_field_names = {f.name for f in fields(RollingTrainerConfig)}
+        # 🆕 拆分 trainer_kwargs
+        from dataclasses import fields as dc_fields
+        
+        try:
+            config_field_names = {f.name for f in dc_fields(RollingTrainerConfig)}
+        except Exception:
+            config_field_names = set()
         
         # RollingDailyTrainer 构造函数接受的参数
-        trainer_init_params = {'warm_start', 'save_each_window'}
+        trainer_init_params = {'warm_start', 'save_each_window', 'device'}
         
         # trainer.fit() 接受的参数
         fit_params = {'save_dir', 'n_epochs'}
@@ -423,28 +569,26 @@ class TaskRunner:
             elif key in config_field_names:
                 config_kwargs[key] = value
             else:
-                # 未知参数，尝试传给 config
-                self.logger.warning(f"未知的 trainer_kwargs 参数: {key}，尝试传给 RollingTrainerConfig")
                 config_kwargs[key] = value
         
-        self.logger.debug(f"config_kwargs: {config_kwargs}")
-        self.logger.debug(f"init_kwargs: {init_kwargs}")
-        self.logger.debug(f"fit_kwargs: {fit_kwargs}")
-        
         # 创建训练配置
-        try:
+        if use_new_trainer:
+            from ..model.train.rolling_daily_trainer import DailyRollingConfig
+            try:
+                config = DailyRollingConfig(**config_kwargs) if config_kwargs else DailyRollingConfig()
+            except TypeError as e:
+                self.logger.warning(f"创建 DailyRollingConfig 失败: {e}，使用默认配置")
+                config = DailyRollingConfig()
+        else:
             config = RollingTrainerConfig(**config_kwargs) if config_kwargs else RollingTrainerConfig()
-        except TypeError as e:
-            self.logger.error(f"创建 RollingTrainerConfig 失败: {e}")
-            self.logger.error(f"传入的参数: {config_kwargs}")
-            raise
         
         # 创建训练器
         trainer = RollingDailyTrainer(
             model_factory=model_factory,
             config=config,
             warm_start=init_kwargs.get('warm_start', True),
-            save_each_window=init_kwargs.get('save_each_window', True)
+            save_each_window=init_kwargs.get('save_each_window', True),
+            device=init_kwargs.get('device', 'cuda')
         )
         
         # 训练
@@ -462,7 +606,9 @@ class TaskRunner:
     
     def _train_dynamic_graph(self, model, daily_loaders, trainer_kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """
-        使用 DynamicGraphTrainer 进行动态图训练
+        使用 SimpleTrainer 进行动态图训练
+        
+        🆕 重构: DynamicGraphTrainer 已废弃，改用 SimpleTrainer
         
         Args:
             model: 模型
@@ -472,9 +618,10 @@ class TaskRunner:
         Returns:
             训练结果字典
         """
-        from ..model.dynamic_graph_trainer import DynamicGraphTrainer, DynamicTrainerConfig
+        # 🆕 使用新的 SimpleTrainer 替代已废弃的 DynamicGraphTrainer
+        from ..model.train import SimpleTrainer, TrainerConfig
         
-        self.logger.info("使用 DynamicGraphTrainer 进行动态图训练")
+        self.logger.info("使用 SimpleTrainer 进行动态图训练 (DynamicGraphTrainer 已废弃)")
         
         # 获取底层 nn.Module
         if hasattr(model, 'model'):
@@ -482,8 +629,7 @@ class TaskRunner:
         else:
             nn_model = model
         
-        # 🆕 拆分参数
-        config_field_names = {f.name for f in fields(DynamicTrainerConfig)}
+        # 拆分参数
         fit_params = {'save_path', 'n_epochs'}
         
         config_kwargs = {}
@@ -492,36 +638,38 @@ class TaskRunner:
         for key, value in trainer_kwargs.items():
             if key in fit_params:
                 fit_kwargs[key] = value
-            elif key in config_field_names:
-                config_kwargs[key] = value
             else:
                 config_kwargs[key] = value
         
         # 创建训练配置
-        config = DynamicTrainerConfig(**config_kwargs) if config_kwargs else DynamicTrainerConfig()
+        config = TrainerConfig(**config_kwargs) if config_kwargs else TrainerConfig()
         
         # 创建训练器
-        trainer = DynamicGraphTrainer(
+        trainer = SimpleTrainer(
             model=nn_model,
-            config=config
+            config=config,
+            device=trainer_kwargs.get('device', 'cuda')
         )
         
         # 训练
         save_path = fit_kwargs.get('save_path', 'output/best_model.pth')
         n_epochs = fit_kwargs.get('n_epochs', config.n_epochs)
         
-        results = trainer.fit(
-            train_loader=daily_loaders.train,
-            val_loader=daily_loaders.val,
+        # 准备 DataLoader
+        train_loader = daily_loaders.train if hasattr(daily_loaders, 'train') else daily_loaders
+        val_loader = daily_loaders.val if hasattr(daily_loaders, 'val') else None
+        
+        results = trainer.train(
+            train_loader=train_loader,
+            val_loader=val_loader,
             n_epochs=n_epochs,
             save_path=save_path
         )
         
         # 预测
-        if daily_loaders.test:
-            pred_df, label_df = trainer.predict(daily_loaders.test, return_labels=True)
-            results['predictions'] = pred_df
-            results['labels'] = label_df
+        if hasattr(daily_loaders, 'test') and daily_loaders.test:
+            predictions = trainer.predict(daily_loaders.test)
+            results['predictions'] = predictions
         
         results['trainer'] = trainer
         

@@ -1,15 +1,17 @@
 """
 数据预处理配置模块 - 使用面向对象配置
 """
-import sys
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Tuple
 from enum import Enum
 from pathlib import Path
 
-# 添加父目录到路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config.base_config import BaseConfig
+# 使用相对导入（相对于 quantclassic 包）
+try:
+    from ..config.base_config import BaseConfig
+except ImportError:
+    # 直接运行脚本时的后备导入
+    from config.base_config import BaseConfig
 
 
 class ProcessMethod(Enum):
@@ -756,11 +758,22 @@ class PreprocessConfig(BaseConfig):
     # 字段映射
     column_mapping: Dict[str, str] = field(default_factory=dict)
     
+    # ========== 统一列名配置（兼容 DataManager 的 ts_code 与 order_book_id）==========
+    # 股票代码列名：支持 'order_book_id'(RiceQuant) 或 'ts_code'(Tushare/DataManager)
+    stock_col: str = 'order_book_id'
+    # 时间列名：支持 'trade_date' 或 'date'
+    time_col: str = 'trade_date'
+    # 是否自动适配列名：如果为 True，会在 fit_transform 时自动检测并映射列名
+    auto_adapt_columns: bool = True
+    
     # 分组配置
     groupby_columns: List[str] = field(default_factory=lambda: ['trade_date'])
     
-    # ID列(不进行处理)
-    id_columns: List[str] = field(default_factory=lambda: ['order_book_id', 'trade_date'])
+    # ID列(不进行处理) - 支持多种命名约定
+    id_columns: List[str] = field(default_factory=lambda: [
+        'order_book_id', 'ts_code', 'stock_code', 'symbol',  # 股票代码的各种别名
+        'trade_date', 'date', 'datetime'  # 时间列的各种别名
+    ])
     
     # 标签生成配置
     label_config: LabelGeneratorConfig = field(default_factory=LabelGeneratorConfig)
@@ -784,6 +797,103 @@ class PreprocessConfig(BaseConfig):
                 raise ValueError(f"pipeline_steps 中的元素必须是 ProcessingStep 类型")
         
         return True
+    
+    def adapt_columns(self, df: 'pd.DataFrame') -> Tuple['pd.DataFrame', Dict[str, str]]:
+        """
+        自动适配列名，解决 data_set(ts_code) 与 data_processor(order_book_id) 的命名冲突
+        
+        Args:
+            df: 输入数据框
+            
+        Returns:
+            df: 适配后的数据框（可能添加/重命名列）
+            mapping: 实际使用的列名映射 {'stock_col': 'xxx', 'time_col': 'xxx'}
+            
+        说明:
+            - 如果数据中存在 ts_code 但不存在 order_book_id，会创建别名列
+            - 如果数据中存在 date 但不存在 trade_date，会创建别名列
+            - 映射关系会更新到 column_mapping 中供后续步骤使用
+        """
+        import pandas as pd
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        df = df.copy()
+        mapping = {'stock_col': self.stock_col, 'time_col': self.time_col}
+        
+        # 股票代码列适配
+        stock_candidates = ['order_book_id', 'ts_code', 'stock_code', 'symbol', 'code']
+        found_stock_col = None
+        for col in stock_candidates:
+            if col in df.columns:
+                found_stock_col = col
+                break
+        
+        if found_stock_col:
+            mapping['stock_col'] = found_stock_col
+            # 如果目标列名不存在，创建别名
+            if self.stock_col not in df.columns and found_stock_col != self.stock_col:
+                df[self.stock_col] = df[found_stock_col]
+                logger.info(f"列名适配: 创建 '{self.stock_col}' 列（来自 '{found_stock_col}'）")
+        else:
+            logger.warning(f"未找到股票代码列，尝试的列名: {stock_candidates}")
+        
+        # 时间列适配
+        time_candidates = ['trade_date', 'date', 'datetime', 'dt']
+        found_time_col = None
+        for col in time_candidates:
+            if col in df.columns:
+                found_time_col = col
+                break
+        
+        if found_time_col:
+            mapping['time_col'] = found_time_col
+            # 如果目标列名不存在，创建别名
+            if self.time_col not in df.columns and found_time_col != self.time_col:
+                df[self.time_col] = df[found_time_col]
+                logger.info(f"列名适配: 创建 '{self.time_col}' 列（来自 '{found_time_col}'）")
+        else:
+            logger.warning(f"未找到时间列，尝试的列名: {time_candidates}")
+        
+        # 更新内部映射
+        self.column_mapping.update({
+            'stock_col': mapping['stock_col'],
+            'time_col': mapping['time_col']
+        })
+        
+        return df, mapping
+    
+    def get_stock_col(self, df: 'pd.DataFrame' = None) -> str:
+        """
+        获取当前数据中实际使用的股票代码列名
+        
+        Args:
+            df: 可选，用于检测实际存在的列
+            
+        Returns:
+            实际使用的股票代码列名
+        """
+        if df is not None:
+            for col in ['order_book_id', 'ts_code', 'stock_code', 'symbol']:
+                if col in df.columns:
+                    return col
+        return self.stock_col
+    
+    def get_time_col(self, df: 'pd.DataFrame' = None) -> str:
+        """
+        获取当前数据中实际使用的时间列名
+        
+        Args:
+            df: 可选，用于检测实际存在的列
+            
+        Returns:
+            实际使用的时间列名
+        """
+        if df is not None:
+            for col in ['trade_date', 'date', 'datetime']:
+                if col in df.columns:
+                    return col
+        return self.time_col
     
     def add_step(self, name: str, method: Union[str, ProcessMethod], 
                  features: Union[str, List[str], None] = None,

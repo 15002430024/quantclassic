@@ -3,47 +3,64 @@
 
 标准化的量化模型接口和实现，参照 Qlib 设计。
 
-## 📦 核心组件
+> **🆕 版本: v2.0.0 (2026-01-11 重构)**
+> - 统一训练引擎，`fit()` 代理到 `train/SimpleTrainer`
+> - 统一 `predict()` 方法到基类，支持所有 batch 格式
+> - 模块化配置系统，支持灵活组合时序/图/融合模块
+> - 图构建统一到 `data_processor/graph_builder.py`
+
+## 📦 模块结构
 
 ```
 model/
-├── base_model.py           # 模型基类
+├── base_model.py           # 模型基类 (BaseModel → Model → PyTorchModel)
+├── pytorch_models.py       # PyTorch 模型实现 (LSTM/GRU/Transformer/VAE)
+├── hybrid_graph_models.py  # 混合图模型 (HybridGraphModel + TemporalBlock/GraphBlock/FusionBlock)
 ├── model_factory.py        # 模型工厂和注册机制
-├── pytorch_models.py       # PyTorch 模型实现
-├── example_usage.py        # 完整使用示例
-└── README.md              # 本文件
+├── model_config.py         # ⚠️ 旧配置（已废弃，请用 modular_config.py）
+├── modular_config.py       # 🆕 模块化配置系统 (CompositeModelConfig)
+├── loss.py                 # 损失函数 (UnifiedLoss, ICLoss, CorrelationRegularizer)
+├── train/                  # 🆕 统一训练引擎
+│   ├── base_trainer.py     #   训练基类 + TrainerConfig
+│   ├── simple_trainer.py   #   简单训练器（单窗口）
+│   ├── rolling_window_trainer.py  #  滚动窗口训练器
+│   └── rolling_daily_trainer.py   #  日级滚动训练器
+├── example/                # 使用示例
+└── updatemd/               # 详细文档
 ```
 
 ## ✨ 核心特性
 
 ### 🎯 统一接口
-- **标准化**: 所有模型继承自 `Model` 基类
+- **标准化**: 所有模型继承自 `PyTorchModel` 基类
 - **一致性**: 统一的 `fit()` 和 `predict()` 接口
-- **兼容性**: 与 Qlib 设计理念一致
+- **🆕 通用 predict**: 基类实现统一预测逻辑，支持 `(x,y)` / `(x,y,adj,...)` / `dict` 等多种 batch 格式
+- **🆕 Trainer 对齐**: `SimpleTrainer.predict` 优先委托模型的 `predict()`，确保与模型的 batch 解析保持一致；纯 `nn.Module` 自动回退内置实现
 
 ### 🏭 工厂模式
 - **动态创建**: 通过配置字典创建模型
-- **注册机制**: 使用装饰器注册模型
-- **灵活配置**: 支持 YAML 配置文件
+- **注册机制**: 使用 `@register_model` 装饰器注册模型
+- **🆕 模块化配置**: `CompositeModelConfig` 支持时序/图/融合模块自由组合
 
 ### 🚀 自动化功能
 - **GPU 管理**: 自动检测和使用 GPU
 - **早停机制**: 内置早停避免过拟合
 - **模型保存**: 自动保存最佳模型
 - **日志记录**: 完整的训练日志
+- **🆕 学习率调度**: 支持 ReduceLROnPlateau / Cosine / Step
 
-### 🔧 PyTorch 优化
-- **梯度裁剪**: 防止梯度爆炸
-- **学习率调度**: 支持多种优化器
-- **批量训练**: 高效的数据加载
+### 🔧 训练引擎 (2026-01 重构)
+- **训练代理**: `Model.fit()` 内部使用 `SimpleTrainer`，保持接口兼容
+- **滚动训练**: `RollingWindowTrainer` 支持权重继承、优化器状态保存
+- **相关性正则化**: 支持 `lambda_corr` 抑制特征冗余
 
 ## 🚀 快速开始
 
 ### 1. 基础使用
 
 ```python
-from model import LSTMModel
-from data_manager import DataManager, DataConfig
+from quantclassic.model import LSTMModel
+from quantclassic.data_set import DataManager, DataConfig
 
 # 准备数据
 config = DataConfig(base_dir='rq_data_parquet')
@@ -59,53 +76,54 @@ model = LSTMModel(
     lr=0.001
 )
 
-# 训练
+# 训练（内部使用 SimpleTrainer）
 model.fit(loaders.train, loaders.val, save_path='output/model.pth')
 
-# 预测
+# 预测（支持标准/图/日级 loader）
 predictions = model.predict(loaders.test)
 ```
 
-### 2. 配置驱动
+### 2. 模块化配置（推荐）
 
 ```python
-from model import ModelFactory
+from quantclassic.model.modular_config import ModelConfigBuilder, ConfigTemplates
+from quantclassic.model import create_model_from_composite_config
 
-# 模型配置
-config = {
-    'class': 'LSTM',
-    'kwargs': {
-        'd_feat': 20,
-        'hidden_size': 128,
-        'num_layers': 3,
-        'dropout': 0.2,
-        'n_epochs': 200,
-        'lr': 0.0005
-    }
-}
+# 方式1: 使用预定义模板
+config = ConfigTemplates.pure_temporal(d_feat=20, model_size='default')
+
+# 方式2: 使用 Builder 灵活组合
+config = ModelConfigBuilder() \
+    .set_input(d_feat=20) \
+    .add_temporal(rnn_type='lstm', hidden_size=128, use_attention=True) \
+    .add_graph(gat_type='correlation', hidden_dim=64, heads=4) \
+    .add_fusion(hidden_sizes=[128, 64]) \
+    .build()
 
 # 创建模型
-model = ModelFactory.create_model(config)
+model = create_model_from_composite_config(config)
 model.fit(train_loader, valid_loader)
 ```
 
-### 3. 模型对比
+### 3. 使用训练引擎
 
 ```python
-from model import LSTMModel, GRUModel, TransformerModel, VAEModel
+from quantclassic.model.train import SimpleTrainer, TrainerConfig
 
-models = {
-    'LSTM': LSTMModel(d_feat=20, hidden_size=64),
-    'GRU': GRUModel(d_feat=20, hidden_size=64),
-    'Transformer': TransformerModel(d_feat=20, d_model=64),
-    'VAE': VAEModel(d_feat=20, hidden_dim=128, latent_dim=16)
-}
+# 创建训练配置
+config = TrainerConfig(
+    n_epochs=100,
+    lr=0.001,
+    early_stop=20,
+    loss_fn='mse',
+    lambda_corr=0.01,  # 相关性正则化
+    use_scheduler=True,
+    scheduler_type='plateau'
+)
 
-results = {}
-for name, model in models.items():
-    model.fit(train_loader, valid_loader)
-    predictions = model.predict(test_loader)
-    results[name] = evaluate(predictions, labels)
+# 创建训练器（传入 nn.Module）
+trainer = SimpleTrainer(model.model, config, device='cuda')
+result = trainer.train(train_loader, valid_loader)
 ```
 
 ## 📚 类继承关系
@@ -120,22 +138,37 @@ Model (继承 BaseModel)
     └── predict() - 抽象方法
     
 PyTorchModel (继承 Model)
+    ├── 🆕 通用 predict() - 支持所有 batch 格式
+    │   ├── _parse_batch_data() - 统一解析 (x,y) / (x,y,adj,...) / dict
+    │   ├── _forward_for_predict() - 前向传播钩子（可覆写）
+    │   └── _post_process() - 后处理钩子（可覆写）
+    ├── fit() - 代理到 SimpleTrainer
     ├── 自动 GPU 管理
-    ├── 内置早停机制
-    ├── 模型保存/加载
-    └── 训练循环封装
+    ├── 学习率调度器
+    └── 相关性正则化支持
     
 LSTMModel / GRUModel / TransformerModel
-    └── 继承 PyTorchModel，实现具体模型
+    └── 继承 PyTorchModel，使用基类 predict()
+    
+VAEModel
+    ├── 继承 PyTorchModel
+    ├── 覆写 predict() 支持 return_latent；在 return_latent=False 时复用基类通用 predict
+    ├── 覆写 _forward_for_predict() 返回 y_pred
+    └── extract_latent() - 提取潜在特征
+
+HybridGraphModel
+    ├── 继承 PyTorchModel
+    ├── 覆写 _parse_batch_data() 解析 funda/stock_idx
+    └── 支持图推理模式 (batch/cross_sectional/neighbor_sampling)
 ```
 
 ## 🔨 创建自定义模型
 
-### 方法 1: 继承 PyTorchModel
+### 方法 1: 继承 PyTorchModel（推荐）
 
 ```python
 import torch.nn as nn
-from model import PyTorchModel, register_model
+from quantclassic.model import PyTorchModel, register_model
 
 class MyNet(nn.Module):
     """自定义神经网络"""
@@ -145,10 +178,13 @@ class MyNet(nn.Module):
         self.fc2 = nn.Linear(hidden_size, 1)
         self.relu = nn.ReLU()
     
-    def forward(self, x):
+    def forward(self, x, return_hidden=False):
         x = x[:, -1, :]  # 取最后时间步
-        x = self.relu(self.fc1(x))
-        return self.fc2(x).squeeze(-1)
+        hidden = self.relu(self.fc1(x))
+        pred = self.fc2(hidden).squeeze(-1)
+        if return_hidden:
+            return pred, hidden  # 支持相关性正则化
+        return pred
 
 
 @register_model('my_model')
@@ -166,75 +202,42 @@ class MyModel(PyTorchModel):
         self.criterion = self._get_loss_fn()
     
     def fit(self, train_loader, valid_loader=None, save_path=None):
-        """训练模型"""
-        for epoch in range(self.n_epochs):
-            train_loss = self._train_epoch(train_loader)
-            
-            if valid_loader:
-                valid_loss = self._valid_epoch(valid_loader)
-                self.logger.info(
-                    f"Epoch {epoch+1}: "
-                    f"Train={train_loss:.6f}, Valid={valid_loss:.6f}"
-                )
+        """训练模型 - 使用 SimpleTrainer"""
+        from quantclassic.model.train import SimpleTrainer, TrainerConfig
+        
+        config = TrainerConfig(
+            n_epochs=self.n_epochs, lr=self.lr, early_stop=self.early_stop,
+            loss_fn=self.loss_fn_name, lambda_corr=self.lambda_corr
+        )
+        trainer = SimpleTrainer(self.model, config, str(self.device))
+        result = trainer.train(train_loader, valid_loader, save_path=save_path)
         
         self.fitted = True
+        return result
     
-    def predict(self, test_loader, return_numpy=True):
-        """预测"""
-        self.model.eval()
-        predictions = []
-        
-        with torch.no_grad():
-            for batch_x, _ in test_loader:
-                batch_x = batch_x.to(self.device)
-                pred = self.model(batch_x)
-                predictions.append(pred.cpu())
-        
-        predictions = torch.cat(predictions)
-        return predictions.numpy() if return_numpy else predictions
+    # predict() 继承自 PyTorchModel，无需实现
+    # 如需自定义，可覆写 _forward_for_predict() 钩子
 ```
 
-### 方法 2: 继承 Model (不使用 PyTorch)
+### 方法 2: 特殊输出模型（如 VAE）
 
 ```python
-from model import Model, register_model
-import lightgbm as lgb
-
-@register_model('lgb')
-class LightGBMModel(Model):
-    """LightGBM 模型"""
+@register_model('my_vae')
+class MyVAEModel(PyTorchModel):
+    """VAE 类模型 - 需要特殊的前向逻辑"""
     
-    def __init__(self, num_leaves=31, learning_rate=0.05, n_estimators=100):
-        super().__init__()
-        self.params = {
-            'num_leaves': num_leaves,
-            'learning_rate': learning_rate,
-            'n_estimators': n_estimators
-        }
-        self.model = None
+    def _forward_for_predict(self, x, adj=None, idx=None):
+        """覆写前向钩子，只返回预测值"""
+        _, y_pred, _, _, _ = self.model(x)  # VAE 返回多个输出
+        return y_pred
     
-    def fit(self, X_train, y_train, X_valid=None, y_valid=None):
-        """训练"""
-        train_data = lgb.Dataset(X_train, label=y_train)
+    def predict(self, test_loader, return_numpy=True, return_latent=False):
+        """扩展 predict 支持返回潜在特征"""
+        if not return_latent:
+            return super().predict(test_loader, return_numpy)
         
-        if X_valid is not None:
-            valid_data = lgb.Dataset(X_valid, label=y_valid)
-            self.model = lgb.train(
-                self.params,
-                train_data,
-                valid_sets=[valid_data],
-                callbacks=[lgb.early_stopping(20)]
-            )
-        else:
-            self.model = lgb.train(self.params, train_data)
-        
-        self.fitted = True
-    
-    def predict(self, X_test):
-        """预测"""
-        if not self.fitted:
-            raise ValueError("Model not fitted")
-        return self.model.predict(X_test)
+        # 自定义逻辑处理 return_latent
+        ...
 ```
 
 ## 🎨 已实现的模型
@@ -244,47 +247,97 @@ class LightGBMModel(Model):
 | LSTM | `LSTMModel` | `'lstm'`, `'LSTM'` | 长短期记忆网络，适合时序 |
 | GRU | `GRUModel` | `'gru'`, `'GRU'` | 参数更少，训练更快 |
 | Transformer | `TransformerModel` | `'transformer'`, `'Transformer'` | 自注意力机制，捕捉长期依赖 |
-| VAE | `VAEModel` | `'vae'`, `'VAE'` | 变分自编码器，因子提取、异常检测 ✨ |
+| VAE | `VAEModel` | `'vae'`, `'VAE'` | 变分自编码器，因子提取、异常检测 |
+| HybridGraph | `HybridGraphModel` | `'hybrid_graph'` | 🆕 时序+图混合模型 (RNN+Attention+GAT) |
 
-## 📋 模型参数说明
+## 🧩 混合图模型 (HybridGraphModel)
 
-### LSTMModel / GRUModel
+### 架构概述
+
+```
+输入: [batch, window, features]
+           │
+    ┌──────┴──────┐
+    ▼             ▼
+TemporalBlock  GraphBlock
+ (RNN+Attn)     (GAT)
+    │             │
+    └──────┬──────┘
+           ▼
+      FusionBlock
+        (MLP)
+           │
+           ▼
+       预测输出
+```
+
+### 子模块说明
+
+- **TemporalBlock**: RNN (LSTM/GRU) + Self-Attention + 残差连接
+- **GraphBlock**: GAT 图注意力网络，支持行业图/相关性图/混合图
+- **FusionBlock**: 多层 MLP + BatchNorm + 残差连接
+
+### 使用示例
 
 ```python
-model = LSTMModel(
-    # 模型结构
-    d_feat=20,           # 特征维度
-    hidden_size=64,      # 隐藏层大小
-    num_layers=2,        # RNN 层数
-    dropout=0.1,         # Dropout 概率
-    
-    # 训练参数
-    n_epochs=100,        # 训练轮数
-    batch_size=256,      # 批量大小
-    lr=0.001,            # 学习率
-    early_stop=20,       # 早停耐心值
+from quantclassic.model import HybridGraphModel
+from quantclassic.model.modular_config import ConfigTemplates
+
+# 使用预定义模板
+config = ConfigTemplates.temporal_with_graph(
+    d_feat=20, gat_type='correlation', model_size='default'
+)
+
+model = HybridGraphModel(config)
+model.fit(train_loader, val_loader)  # loader 需返回 (x, y, adj, ...)
+predictions = model.predict(test_loader)
+```
+
+## 📋 训练配置参数
+
+### TrainerConfig (train/base_trainer.py)
+
+```python
+from quantclassic.model.train import TrainerConfig
+
+config = TrainerConfig(
+    # 基础训练参数
+    n_epochs=100,            # 训练轮数
+    lr=0.001,                # 学习率
+    early_stop=20,           # 早停耐心值
     
     # 优化器和损失
-    optimizer='adam',    # 'adam', 'sgd', 'adamw'
-    loss_fn='mse',      # 'mse', 'mae', 'huber'
+    optimizer='adam',        # 'adam', 'sgd', 'adamw'
+    loss_fn='mse',           # 'mse', 'mae', 'huber', 'ic', 'mse_corr', 'unified' 等
+    loss_kwargs={},          # 损失函数额外参数
     
-    # 设备
-    device=None         # None(自动), 'cuda', 'cpu'
+    # 学习率调度器
+    use_scheduler=True,
+    scheduler_type='plateau',  # 'plateau', 'cosine', 'step'
+    scheduler_patience=5,
+    scheduler_factor=0.5,
+    scheduler_min_lr=1e-6,
+    
+    # 🆕 相关性正则化（抑制特征冗余）
+    lambda_corr=0.0,         # >0 启用，推荐 0.001~0.1
+    
+    # 检查点
+    checkpoint_dir=None,
+    save_best_only=True,
 )
 ```
 
-### TransformerModel
+### 支持的损失函数
 
-```python
-model = TransformerModel(
-    d_feat=20,          # 特征维度
-    d_model=64,         # Transformer 隐藏维度
-    nhead=4,            # 注意力头数
-    num_layers=2,       # Transformer 层数
-    dropout=0.1,        # Dropout 概率
-    # ... 其他参数同上
-)
-```
+| 损失函数 | 说明 |
+|----------|------|
+| `mse` | 均方误差 |
+| `mae` | 平均绝对误差 |
+| `huber` | Huber 损失 |
+| `ic` | 排序 IC Loss |
+| `mse_corr` / `mae_corr` / `huber_corr` / `ic_corr` | 带相关性正则化 |
+| `combined` | 组合损失 |
+| `unified` | 统一损失 (UnifiedLoss) |
 
 ## 💾 模型保存和加载
 
@@ -305,11 +358,27 @@ new_model.fit(train_loader, valid_loader)
 
 ## 🔗 与其他模块集成
 
+### 图构建架构 (2026-01 重构)
+
+```
+graph_builder.py (HOW)        daily_graph_loader.py (WHEN)      base_model.py (WHO)
+┌────────────────────┐       ┌──────────────────────┐        ┌─────────────────┐
+│ GraphBuilderFactory│◄──────│ DailyGraphDataLoader │        │ _parse_batch_data│
+│ ├─ industry        │       │   collate_daily()    │◄───────│   (x,y,adj,...)  │
+│ ├─ correlation     │       │   每日触发图构建     │        │                  │
+│ └─ hybrid          │       └──────────────────────┘        └─────────────────┘
+└────────────────────┘
+唯一实现入口                  数据加载时调用                  模型自动解析
+```
+
+- **图构建统一入口**: `data_processor/graph_builder.py` 的 `GraphBuilderFactory`
+- **⚠️ 已废弃**: `model/utils/adj_matrix_builder.py`，请使用 `AdjMatrixUtils`
+
 ### 与 DataManager 集成
 
 ```python
-from data_manager import DataManager, DataConfig
-from model import LSTMModel
+from quantclassic.data_set import DataManager, DataConfig
+from quantclassic.model import LSTMModel
 
 # 1. 数据准备
 config = DataConfig(base_dir='rq_data_parquet')
@@ -324,26 +393,23 @@ model.fit(loaders.train, loaders.val)
 predictions = model.predict(loaders.test)
 ```
 
-### 与 Factorsystem 集成
+### 滚动训练
 
 ```python
-from model import LSTMModel
-from Factorsystem import FactorBacktestSystem, BacktestConfig
+from quantclassic.model.train import RollingWindowTrainer, RollingTrainerConfig
 
-# 1. 训练模型
-model = LSTMModel(d_feat=20)
-model.fit(train_loader, valid_loader)
+# 配置滚动训练
+config = RollingTrainerConfig(
+    n_epochs=50,
+    weight_inheritance=True,    # 继承上窗口权重
+    reset_optimizer=False,      # 🆕 保留优化器状态（动量）
+    reset_scheduler=False,
+    save_each_window=True,
+)
 
-# 2. 生成因子
-predictions = model.predict(test_loader)
-
-# 3. 添加到数据框
-df['factor'] = predictions
-
-# 4. 回测
-backtest_config = BacktestConfig()
-system = FactorBacktestSystem(backtest_config)
-results = system.run_backtest(df)
+# 创建滚动训练器
+trainer = RollingWindowTrainer(model_factory, config)
+results = trainer.train(rolling_loaders)
 ```
 
 ## 📊 完整工作流示例
@@ -352,7 +418,7 @@ results = system.run_backtest(df)
 """完整的量化研究流程"""
 
 # 1. 数据准备
-from data_manager import DataManager, DataConfig
+from quantclassic.data_set import DataManager, DataConfig
 config = DataConfig(
     base_dir='rq_data_parquet',
     window_size=20,
@@ -361,31 +427,29 @@ config = DataConfig(
 manager = DataManager(config)
 loaders = manager.run_full_pipeline()
 
-# 2. 模型训练
-from model import ModelFactory
-model_config = {
-    'class': 'LSTM',
-    'kwargs': {
-        'd_feat': len(manager.feature_cols),
-        'hidden_size': 128,
-        'num_layers': 3,
-        'n_epochs': 200,
-        'lr': 0.0005,
-        'early_stop': 20
-    }
-}
-model = ModelFactory.create_model(model_config)
+# 2. 模型训练 (使用模块化配置)
+from quantclassic.model.modular_config import ModelConfigBuilder
+from quantclassic.model import create_model_from_composite_config
+
+model_config = ModelConfigBuilder() \
+    .set_input(d_feat=len(manager.feature_cols)) \
+    .add_temporal(rnn_type='lstm', hidden_size=128, num_layers=3, use_attention=True) \
+    .add_fusion(hidden_sizes=[128, 64]) \
+    .set_training(n_epochs=200, lr=0.0005, early_stop=20, lambda_corr=0.01) \
+    .build()
+
+model = create_model_from_composite_config(model_config)
 model.fit(
     loaders.train,
     loaders.val,
     save_path='output/best_model.pth'
 )
 
-# 3. 生成预测
+# 3. 生成预测（自动支持各种 batch 格式）
 predictions = model.predict(loaders.test)
 
 # 4. 回测分析
-from Factorsystem import FactorBacktestSystem, BacktestConfig
+from quantclassic.Factorsystem import FactorBacktestSystem, BacktestConfig
 backtest_config = BacktestConfig(
     output_dir='output/backtest',
     save_plots=True
@@ -430,7 +494,7 @@ VAE 是一种生成模型，在量化金融中特别适合：
 ### VAE 使用示例
 
 ```python
-from model import VAEModel
+from quantclassic.model import VAEModel
 
 # 创建 VAE 模型
 vae_model = VAEModel(
@@ -459,43 +523,9 @@ predictions, latent_features = vae_model.predict(
 )
 
 # 或单独提取潜在特征（用于因子生成）
+# 🆕 支持图/日级 loader，使用 _parse_batch_data 解析
 mu, z = vae_model.extract_latent(test_loader)
 ```
-
-### VAE 损失函数
-
-VAE 使用三个损失的加权组合：
-
-1. **重构损失** (Reconstruction Loss): 确保解码器能重构输入
-   ```python
-   L_recon = MSE(x_recon, x_true)
-   ```
-
-2. **KL 散度** (KL Divergence): 正则化潜在空间，使其接近标准正态分布
-   ```python
-   L_kl = -0.5 * mean(1 + log(σ²) - μ² - σ²)
-   ```
-
-3. **预测损失** (Prediction Loss): 监督学习收益预测
-   ```python
-   L_pred = MSE(y_pred, y_true)
-   ```
-
-总损失:
-```python
-L_total = α·L_recon + β·L_kl + γ·L_pred
-```
-
-### VAE 参数调优建议
-
-| 参数 | 推荐范围 | 说明 |
-|------|---------|------|
-| `hidden_dim` | 64-256 | 编码器隐藏层大小 |
-| `latent_dim` | 8-32 | 潜在空间维度（因子数量） |
-| `alpha_recon` | 0.05-0.2 | 重构损失权重（较小） |
-| `beta_kl` | 0.0001-0.01 | KL散度权重（很小） |
-| `gamma_pred` | 0.5-2.0 | 预测损失权重（较大） |
-| `dropout` | 0.2-0.4 | Dropout率 |
 
 ### VAE 潜在特征可视化
 
@@ -515,52 +545,61 @@ plt.figure(figsize=(10, 8))
 scatter = plt.scatter(z_2d[:, 0], z_2d[:, 1], c=labels, cmap='viridis', alpha=0.6)
 plt.colorbar(scatter, label='Return')
 plt.title('VAE Latent Space (t-SNE)')
-plt.xlabel('Component 1')
-plt.ylabel('Component 2')
 plt.show()
 ```
 
-### VAE 用于因子生成
+## ⚙️ 配置系统迁移指南
+
+### 旧配置 → 新配置
 
 ```python
-# 1. 训练 VAE
-vae_model.fit(train_loader, valid_loader)
+# ❌ 旧方式（已废弃，会触发 DeprecationWarning）
+from quantclassic.model.model_config import LSTMConfig, ModelConfigFactory
+config = LSTMConfig(hidden_size=64, num_layers=2)
 
-# 2. 提取潜在特征作为因子
-mu_features, z_features = vae_model.extract_latent(test_loader)
+# ✅ 新方式 1: 使用模板
+from quantclassic.model.modular_config import ConfigTemplates
+config = ConfigTemplates.pure_temporal(d_feat=20, model_size='default')
 
-# 3. 构建因子DataFrame
-import pandas as pd
-factor_df = pd.DataFrame({
-    'latent_mean': mu_features.mean(axis=1),
-    'latent_std': mu_features.std(axis=1),
-    **{f'latent_{i}': mu_features[:, i] for i in range(mu_features.shape[1])}
-})
+# ✅ 新方式 2: 使用 Builder
+from quantclassic.model.modular_config import ModelConfigBuilder
+config = ModelConfigBuilder() \
+    .set_input(d_feat=20) \
+    .add_temporal(rnn_type='lstm', hidden_size=64, num_layers=2) \
+    .add_fusion(hidden_sizes=[64]) \
+    .build()
 
-# 4. 因子标准化
-from sklearn.preprocessing import StandardScaler
-scaler = StandardScaler()
-factor_df_scaled = pd.DataFrame(
-    scaler.fit_transform(factor_df),
-    columns=factor_df.columns
+# ✅ 新方式 3: 直接构造
+from quantclassic.model.modular_config import CompositeModelConfig, TemporalModuleConfig
+config = CompositeModelConfig(
+    temporal=TemporalModuleConfig(rnn_type='lstm', hidden_size=64),
+    graph=None,
+    d_feat=20
 )
-
-# 5. 回测
-from Factorsystem import FactorBacktestSystem
-backtest_system = FactorBacktestSystem(backtest_config)
-results = backtest_system.run_backtest(factor_df_scaled)
 ```
 
-## 🎯 下一步计划
+### 配置自动转换
 
-- [ ] 添加更多模型 (TabNet, TCN, ALSTM 等)
-- [ ] 实现模型集成 (Ensemble)
-- [ ] 添加超参数优化
-- [ ] 实现增量学习
-- [ ] 添加模型解释性工具
-- [x] ✅ 添加 VAE 模型（因子提取、异常检测）
-- [ ] 创建实验管理系统
-- [ ] 支持分布式训练
+```python
+# 如果有旧配置对象，可自动转换
+from quantclassic.model.model_config import to_composite_config
+old_config = LSTMConfig(...)
+new_config = to_composite_config(old_config)
+```
+
+## 🎯 已完成重构 (2026-01-11)
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| 统一 `predict()` 到基类 | ✅ | 支持 `(x,y)` / `(x,y,adj,...)` / `dict` 格式 |
+| `fit()` 代理到 SimpleTrainer | ✅ | 保持接口兼容，内部使用统一训练引擎 |
+| VAE.extract_latent 批次解包 | ✅ | 使用 `_parse_batch_data` 修复 unpack 错误 |
+| 配置系统兼容层 | ✅ | 旧配置触发废弃警告，提供转换函数 |
+| 图构建统一入口 | ✅ | `data_processor/graph_builder.py` |
+| 滚动训练优化器状态保存 | ✅ | `reset_optimizer=False` 生效 |
+| 损失函数白名单扩展 | ✅ | 支持 `mae_corr`, `unified` 等 |
+| DailyRollingConfig 导出 | ✅ | `from model.train import DailyRollingConfig` |
+
 
 ## 📖 参考
 
@@ -569,6 +608,15 @@ results = backtest_system.run_backtest(factor_df_scaled)
 - **VAE**: Kingma & Welling (2013) "Auto-Encoding Variational Bayes"
 
 ## 📝 更新日志
+
+- **v2.0.0** (2026-01-11)
+  - 🆕 统一训练引擎 `model/train/`，`fit()` 代理到 `SimpleTrainer`
+  - 🆕 统一 `predict()` 方法到 `PyTorchModel` 基类
+  - 🆕 模块化配置系统 `CompositeModelConfig`，旧配置标记废弃
+  - 🆕 图构建合并到 `data_processor/graph_builder.py`
+  - ✅ 修复 VAE.extract_latent 批次解包问题
+  - ✅ 修复滚动训练优化器状态丢失问题
+  - ✅ 扩展 TrainerConfig 损失函数支持列表
 
 - **v1.1.0** (2025-11-19)
   - ✨ 添加 VAE (Variational Autoencoder) 模型

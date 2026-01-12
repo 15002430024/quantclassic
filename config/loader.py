@@ -11,14 +11,12 @@ ConfigLoader - 统一配置加载器
 """
 
 import os
-import sys
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, Type
 import yaml
 
-# 添加当前目录到路径
-sys.path.insert(0, str(Path(__file__).parent))
-from base_config import BaseConfig
+# 使用相对导入
+from .base_config import BaseConfig
 
 
 class ConfigLoader:

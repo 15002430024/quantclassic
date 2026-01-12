@@ -3,7 +3,11 @@
 ## 📖 目录
 
 - [简介](#简介)
+- [模块综述与职责边界](#模块综述与职责边界)
 - [核心特性](#核心特性)
+- [继承关系与依赖](#继承关系与依赖)
+- [与 data_set / model 的协同](#与-data_set--model-的协同)
+- [重复实现与硬编码检查](#重复实现与硬编码检查)
 - [快速开始](#快速开始)
 - [模块架构](#模块架构)
 - [详细使用说明](#详细使用说明)
@@ -19,6 +23,14 @@
 
 量化数据预处理模块是一个工程化的特征处理工具,专为量化投资研究设计。提供标准化、中性化、极值处理等多种数据预处理功能,支持配置驱动、状态保存、训练推理分离。
 
+## 模块综述与职责边界
+
+- 目标: 在进入数据集/模型阶段前完成列名对齐、异常值处理、中性化和尺度归一,保证后续特征工程、图构建与训练输入一致。
+- 定位: 面向 `DataManager`/回测/训练的前置管线,不承担特征生成或模型训练逻辑,仅聚焦特征清洗与可重复性。
+- 流程角色: `fit_transform()` 产出可复现的标准化特征; `transform()` 复用训练态参数用于推理/日更。
+- 状态管理: 通过 `save()/load()` 持久化配置与统计量,确保不同进程、滚动窗口和线上/线下环境一致。
+- 输出契约: 保留原始 ID/时间列,仅对特征列做可追溯的变换; 不改动标签列,不做特征自动生成。
+
 ### ✨ 核心特性
 
 - **配置驱动**: 通过配置对象灵活控制处理流程
@@ -27,6 +39,71 @@
 - **状态持久化**: 保存和加载预处理器状态
 - **丰富的处理方法**: 10+ 种预处理算法
 - **灵活的字段选择**: 支持对不同特征应用不同处理
+- **🆕 列名自适应**: 自动兼容 `ts_code`(Tushare/DataManager) 和 `order_book_id`(RiceQuant)
+- **🆕 防重复转换**: 窗口处理器内置转换标记，防止重复应用
+
+## 继承关系与依赖
+
+### 模块结构与职责
+
+```
+data_processor/
+├─ data_preprocessor.py   # 编排器: 执行 fit/transform/save/load
+├─ preprocess_config.py   # 配置与模板: ProcessMethod/ProcessingStep/PreprocessConfig
+├─ feature_processor.py   # 算法引擎: 缺失/极值/标准化/中性化/秩归一
+├─ window_processor.py    # 窗口级转换: 对数变换、成交量标准化、防重复标记
+├─ graph_builder.py       # 图构建工厂: 行业/相关/混合, 唯一入口
+├─ label_generator.py     # 标签生成辅助: 未来收益等衍生标签
+├─ example_preprocess.py  # 快速示例
+└─ preprocess_config.py   # 预设模板与列名自适配
+```
+
+内部类关系:
+
+```
+DataPreprocessor (入口)
+    ├─ PreprocessConfig (步骤/列名/分组配置)
+    │    └─ List[ProcessingStep] (方法枚举于 ProcessMethod)
+    └─ FeatureProcessor (按配置执行算法)
+
+WindowProcessor (可选窗口预处理, 提供转换标记)
+GraphBuilderFactory (图构建唯一入口, 由 graph_builder 提供)
+```
+
+### 依赖与约定
+
+- 运行时依赖: pandas/numpy/scipy/statsmodels(OLS 中性化) 等常见科学计算库。
+- 列名约定: 默认 `stock_col='order_book_id'`, `time_col='trade_date'`, `auto_adapt_columns` 自动映射 `ts_code/stock_code/symbol`。
+- 图构建: `GraphBuilderFactory` 作为唯一工厂, 支持行业/相关/混合图, 可从 `DataConfig` 透传列名与股票池。
+- 数据集衔接: 预处理输出列名需与 `data_set.DataManager` 的 `stock_col/time_col` 保持一致, 防止分组、滚动窗口或图构建失败。
+
+## 与 data_set / model 的协同
+
+- DataManager 前置清洗: 在调用 `DataManager.run_full_pipeline()` 前, 使用 `DataPreprocessor.fit_transform()` 生成干净特征; 线上增量数据使用同一预处理器 `transform()` 保持统计量一致。
+- 列名自适应链路: PreprocessConfig.detect → FeatureProcessor.stock_col → GraphBuilderConfig.adapt_stock_col → DataManager.stock_col, 避免 `ts_code/order_book_id` 不一致导致的分组、中性化或图构建错误。
+- 窗口与图数据: `WindowProcessor` 的转换标记避免与 `TimeSeriesStockDataset`/`DailyGraphDataLoader` 二次执行对数/标准化; 图构建统一通过 `GraphBuilderFactory`，model 侧仅消费生成的邻接矩阵。
+- 模型输入一致性: 经过预处理的数据直接喂给 `model.PyTorchModel` 及其训练器，保持训练/推理尺度对齐，避免因重复标准化或列名缺失造成的 batch 解析错误。
+
+## 重复实现与硬编码检查
+
+- 列名硬编码清理: `PreprocessConfig.get_stock_col()` 自动探测 `order_book_id/ts_code/stock_code/symbol`, `FeatureProcessor` 与中性化、时序标准化统一使用该列。
+- 窗口转换去重: `WindowProcessor` 引入 `_WINDOW_TRANSFORM_MARKER` 及 `is_transformed()/mark_transformed()`，与数据集内的窗口级变换互斥，避免重复 log/scale。
+- 图构建统一入口: 仅保留 `data_processor/graph_builder.py` 作为 canonical path，`GraphBuilderConfig.from_data_config()` 支持列名透传；旧的 model 侧静态邻接工具已标注为 deprecated。
+- Daily collate 列名解耦: `daily_graph_loader.collate_daily` 根据图配置动态读取股票列，避免硬编码 `order_book_id`。
+- 处理方法去硬编码: 时序标准化与中性化参数已移除固定列名，全部从配置或自动探测获取，防止回退全局统计导致的隐性失效。
+
+### ⚠️ 与 DataManager 集成注意事项
+
+本模块与 `data_set.DataManager` 集成时，需注意以下列名差异：
+
+| 模块 | 股票代码列默认值 | 时间列默认值 |
+|------|-----------------|-------------|
+| data_processor | `order_book_id` | `trade_date` |
+| data_set (DataManager) | `ts_code` | `trade_date` |
+
+**解决方案**（已内置，默认启用）：
+- `PreprocessConfig` 设置 `auto_adapt_columns=True`（默认）
+- 处理器会在 `fit_transform()` 时自动检测并适配列名
 
 ---
 

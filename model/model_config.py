@@ -1,18 +1,50 @@
 """
 ModelConfig - 模型配置类
 
-使用面向对象的配置替代字典配置
-支持所有 QuantClassic 模型的统一配置接口
+⚠️ 废弃警告 (2026-01-11)
+==========================
+此模块中的扁平化配置类（LSTMConfig, GRUConfig 等）已废弃。
+请迁移至模块化配置系统 `modular_config.py`。
+
+迁移示例:
+    # 旧方式 (已废弃)
+    from quantclassic.model.model_config import LSTMConfig
+    config = LSTMConfig(hidden_size=64, num_layers=2)
+    
+    # 新方式 (推荐)
+    from quantclassic.model.modular_config import ConfigTemplates
+    config = ConfigTemplates.pure_temporal(d_feat=20, model_size='default')
+    
+    # 或使用 ModelConfigBuilder
+    from quantclassic.model.modular_config import ModelConfigBuilder
+    config = ModelConfigBuilder() \\
+        .set_input(d_feat=20) \\
+        .add_temporal(rnn_type='lstm', hidden_size=64, num_layers=2) \\
+        .add_fusion(hidden_sizes=[64]) \\
+        .build()
 """
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
-import sys
 from pathlib import Path
 
-# 添加父目录到路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config.base_config import BaseConfig
+# 使用相对导入（相对于 quantclassic 包）
+try:
+    from ..config.base_config import BaseConfig
+except ImportError:
+    # 直接运行脚本时的后备导入
+    from config.base_config import BaseConfig
+
+
+def _emit_deprecation_warning(class_name: str):
+    """发出废弃警告"""
+    warnings.warn(
+        f"{class_name} 已废弃，请迁移至 modular_config.CompositeModelConfig。"
+        f"详见 model/REFACTOR_PLAN.md '配置系统合并' 章节。",
+        DeprecationWarning,
+        stacklevel=3
+    )
 
 
 @dataclass
@@ -509,10 +541,23 @@ class HybridGraphConfig(BaseModelConfig):
         return True
 
 
-# 配置工厂
+# ==================== 配置工厂（兼容层）====================
+
 class ModelConfigFactory:
     """
     模型配置工厂 - 根据模型类型创建配置
+    
+    ⚠️ 废弃警告 (2026-01-11)
+    =========================
+    此工厂类已废弃。推荐使用 modular_config.ConfigTemplates 或 ModelConfigBuilder。
+    
+    迁移示例:
+        # 旧方式 (已废弃)
+        config = ModelConfigFactory.create('lstm', hidden_size=64)
+        
+        # 新方式 (推荐)
+        from quantclassic.model.modular_config import ConfigTemplates
+        config = ConfigTemplates.pure_temporal(d_feat=20)
     """
     
     _config_map = {
@@ -529,16 +574,20 @@ class ModelConfigFactory:
         """
         创建模型配置
         
+        ⚠️ 已废弃 - 请使用 modular_config.ConfigTemplates
+        
         Args:
             model_type: 模型类型（'lstm', 'gru', 'transformer', 'vae', 'mlp'）
             **kwargs: 配置参数
             
         Returns:
-            模型配置对象
+            模型配置对象（返回旧配置类型以保持兼容）
             
         Example:
             config = ModelConfigFactory.create('vae', hidden_dim=256, latent_dim=32)
         """
+        _emit_deprecation_warning('ModelConfigFactory.create()')
+        
         model_type = model_type.lower()
         
         if model_type not in cls._config_map:
@@ -555,12 +604,16 @@ class ModelConfigFactory:
         """
         从字典创建配置（自动检测模型类型）
         
+        ⚠️ 已废弃 - 请使用 modular_config.CompositeModelConfig.from_dict()
+        
         Args:
             config_dict: 配置字典，必须包含 'model_type' 字段
             
         Returns:
             模型配置对象
         """
+        _emit_deprecation_warning('ModelConfigFactory.from_dict()')
+        
         if 'model_type' not in config_dict:
             raise ValueError("配置字典必须包含 'model_type' 字段")
         
@@ -572,6 +625,16 @@ class ModelConfigFactory:
         """
         获取预定义模板
         
+        ⚠️ 已废弃 - 请使用 modular_config.ConfigTemplates
+        
+        迁移示例:
+            # 旧方式 (已废弃)
+            config = ModelConfigFactory.get_template('lstm', 'small')
+            
+            # 新方式 (推荐)
+            from quantclassic.model.modular_config import ConfigTemplates
+            config = ConfigTemplates.pure_temporal(d_feat=20, model_size='small')
+        
         Args:
             model_type: 模型类型
             template: 模板名称（'default', 'small', 'large'）
@@ -579,6 +642,8 @@ class ModelConfigFactory:
         Returns:
             模型配置对象
         """
+        _emit_deprecation_warning('ModelConfigFactory.get_template()')
+        
         templates = {
             'vae': {
                 'default': VAEConfig(),
@@ -711,3 +776,111 @@ if __name__ == '__main__':
     print("\n" + "=" * 80)
     print("✅ ModelConfig 测试完成")
     print("=" * 80)
+
+
+# ==================== 🆕 配置转换工具（2026-01-11）====================
+
+def to_composite_config(old_config: BaseModelConfig):
+    """
+    🆕 将旧扁平配置转换为模块化配置
+    
+    用于平滑迁移：将 LSTMConfig/GRUConfig 等旧配置转为 CompositeModelConfig。
+    
+    Args:
+        old_config: 旧版配置对象（LSTMConfig, GRUConfig 等）
+        
+    Returns:
+        CompositeModelConfig 对象
+        
+    Example:
+        >>> old_cfg = LSTMConfig(hidden_size=64, num_layers=2)
+        >>> new_cfg = to_composite_config(old_cfg)
+        >>> isinstance(new_cfg, CompositeModelConfig)
+        True
+    """
+    try:
+        from .modular_config import (
+            CompositeModelConfig, 
+            TemporalModuleConfig, 
+            GraphModuleConfig, 
+            FusionModuleConfig
+        )
+    except ImportError:
+        raise ImportError("无法导入 modular_config，请确保模块存在")
+    
+    # 提取通用训练参数
+    training_kwargs = {
+        'n_epochs': getattr(old_config, 'n_epochs', 100),
+        'batch_size': getattr(old_config, 'batch_size', 256),
+        'learning_rate': getattr(old_config, 'learning_rate', 0.001),
+        'early_stop': getattr(old_config, 'early_stop', 20),
+        'optimizer': getattr(old_config, 'optimizer', 'adam'),
+        'loss_fn': getattr(old_config, 'loss_fn', 'mse'),
+    }
+    
+    # 根据旧配置类型构建模块化配置
+    if isinstance(old_config, LSTMConfig):
+        temporal = TemporalModuleConfig(
+            rnn_type='lstm',
+            hidden_size=old_config.hidden_size,
+            num_layers=old_config.num_layers,
+            dropout=old_config.dropout,
+            bidirectional=old_config.bidirectional,
+        )
+        d_feat = old_config.d_feat or 20
+        
+    elif isinstance(old_config, GRUConfig):
+        temporal = TemporalModuleConfig(
+            rnn_type='gru',
+            hidden_size=old_config.hidden_size,
+            num_layers=old_config.num_layers,
+            dropout=old_config.dropout,
+            bidirectional=old_config.bidirectional,
+        )
+        d_feat = old_config.d_feat or 20
+        
+    elif isinstance(old_config, HybridGraphConfig):
+        temporal = TemporalModuleConfig(
+            rnn_type=old_config.rnn_type,
+            hidden_size=old_config.rnn_hidden,
+            num_layers=old_config.rnn_layers,
+            dropout=old_config.dropout,
+        )
+        graph = GraphModuleConfig(
+            gat_type=old_config.gat_type,
+            hidden_dim=old_config.gat_hidden,
+            heads=old_config.gat_heads,
+            top_k=old_config.top_k_neighbors,
+        ) if old_config.use_graph else None
+        
+        fusion = FusionModuleConfig(
+            hidden_sizes=old_config.mlp_hidden_sizes,
+            dropout=old_config.dropout,
+        )
+        d_feat = old_config.d_feat or 20
+        
+        return CompositeModelConfig(
+            temporal=temporal,
+            graph=graph,
+            fusion=fusion,
+            d_feat=d_feat,
+            **training_kwargs
+        )
+    else:
+        # 未知配置类型，尝试使用默认时序模块
+        temporal = TemporalModuleConfig(rnn_type='lstm', hidden_size=64)
+        d_feat = getattr(old_config, 'd_feat', 20)
+    
+    # 默认融合层
+    fusion = FusionModuleConfig(
+        hidden_sizes=[temporal.hidden_size],
+        dropout=getattr(old_config, 'dropout', 0.3),
+    )
+    
+    return CompositeModelConfig(
+        temporal=temporal,
+        graph=None,
+        fusion=fusion,
+        d_feat=d_feat,
+        **training_kwargs
+    )

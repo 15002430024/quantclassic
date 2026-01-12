@@ -48,9 +48,10 @@ class DataPreprocessor:
         else:
             self.config = PreprocessConfig()
         
-        # 初始化特征处理器
+        # 初始化特征处理器（传入 stock_col 以支持列名适配）
         self.feature_processor = FeatureProcessor(
-            groupby_columns=self.config.groupby_columns
+            groupby_columns=self.config.groupby_columns,
+            stock_col=self.config.stock_col
         )
         
         # 是否已拟合
@@ -59,6 +60,10 @@ class DataPreprocessor:
         # 保存的列名(用于验证)
         self.feature_columns = []
         self.id_columns = []
+        
+        # 实际使用的列名映射（在 fit_transform 时确定）
+        self._actual_stock_col = None
+        self._actual_time_col = None
         
         logger.info(f"初始化预处理器,管道步骤数: {len(self.config.pipeline_steps)}")
     
@@ -89,8 +94,24 @@ class DataPreprocessor:
         
         Returns:
             处理后的数据框
+            
+        Note:
+            自动兼容 DataManager 输出的 ts_code 列和传统的 order_book_id 列。
+            如果配置了 auto_adapt_columns=True（默认），会自动检测并适配列名。
         """
         df = df.copy()
+        
+        # ========== 列名自适应（解决 ts_code vs order_book_id 问题）==========
+        if self.config.auto_adapt_columns:
+            df, col_mapping = self.config.adapt_columns(df)
+            self._actual_stock_col = col_mapping['stock_col']
+            self._actual_time_col = col_mapping['time_col']
+            # 同步更新 FeatureProcessor 的 stock_col
+            self.feature_processor.stock_col = self._actual_stock_col
+            logger.info(f"列名适配完成: stock_col='{self._actual_stock_col}', time_col='{self._actual_time_col}'")
+        else:
+            self._actual_stock_col = self.config.stock_col
+            self._actual_time_col = self.config.time_col
         
         # 自动推断特征列
         if feature_columns is None:
@@ -98,10 +119,10 @@ class DataPreprocessor:
         
         self.feature_columns = feature_columns
         
-        # 推断ID列
+        # 推断ID列（使用实际存在的列）
         self.id_columns = [col for col in self.config.id_columns if col in df.columns]
         if not self.id_columns:
-            self.id_columns = ['order_book_id', 'trade_date']
+            self.id_columns = [self._actual_stock_col, self._actual_time_col]
         
         logger.info(f"开始fit_transform, 特征数: {len(feature_columns)}, 样本数: {len(df)}")
         

@@ -32,47 +32,22 @@ Example:
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Union
 from enum import Enum
-import sys
 from pathlib import Path
 
-# 添加父目录到路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
+# 使用相对导入（相对于 quantclassic 包）
+# 移除降级版 BaseConfig，强制依赖正确的基类
 try:
+    from ..config.base_config import BaseConfig
+except ImportError:
+    # 直接运行脚本时的后备导入
     from config.base_config import BaseConfig
-except ImportError:
-    # 如果导入失败，定义一个简单的基类
-    @dataclass
-    class BaseConfig:
-        def to_dict(self): return {}
-        def to_yaml(self, path): pass
-        def to_json(self, path): pass
-        @classmethod
-        def from_yaml(cls, path): return cls()
-        @classmethod
-        def from_dict(cls, d): return cls()
-        def update(self, **kwargs): pass
-        def validate(self): return True
 
+# 导入 BaseModelConfig（用于模型配置继承）
 try:
-    from model.model_config import BaseModelConfig
+    from .model_config import BaseModelConfig
 except ImportError:
-    try:
-        from .model_config import BaseModelConfig
-    except ImportError:
-        # 如果导入失败，定义一个简单的基类
-        @dataclass
-        class BaseModelConfig(BaseConfig):
-            device: str = 'cuda'
-            n_epochs: int = 100
-            batch_size: int = 256
-            learning_rate: float = 0.001
-            early_stop: int = 20
-            optimizer: str = 'adam'
-            loss_fn: str = 'mse'
-            weight_decay: float = 0.0
-            model_save_path: str = 'output/best_model.pth'
-            log_dir: str = 'logs'
+    # 直接运行脚本时的后备导入
+    from model.model_config import BaseModelConfig
             verbose: bool = True
             seed: Optional[int] = None
 

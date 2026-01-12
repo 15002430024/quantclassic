@@ -42,7 +42,7 @@ from .factory import (
     InferenceDataset
 )
 from .manager import DataManager
-from .rolling_trainer import RollingWindowTrainer
+# ⚠️ RollingWindowTrainer 已从数据层移除 - 请使用 model.train.RollingWindowTrainer
 
 # 图数据加载器 (GNN 训练)
 from .graph import (
@@ -68,7 +68,7 @@ __all__ = [
     'DataValidator',
     'DatasetFactory',
     'DataManager',
-    'RollingWindowTrainer',
+    # ⚠️ RollingWindowTrainer 已移至 model.train
     
     # 划分器
     'DataSplitter',

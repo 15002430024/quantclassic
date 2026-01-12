@@ -288,8 +288,9 @@ class TaskConfig(BaseConfig):
         dataset_kwargs (Dict): 数据集初始化参数
         trainer_class (str): 训练器类名，可选值:
             - '' (默认): 使用模型自带的 fit 方法
-            - 'RollingDailyTrainer': 滚动窗口训练
-            - 'DynamicGraphTrainer': 动态图训练
+            - 'SimpleTrainer': 简单训练器
+            - 'RollingWindowTrainer': 滚动窗口训练
+            - 'RollingDailyTrainer': 日级滚动窗口训练
         trainer_kwargs (Dict): 训练器初始化参数
         use_rolling_loaders (bool): 是否使用滚动窗口加载器
         backtest_enabled (bool): 是否启用回测
@@ -303,8 +304,8 @@ class TaskConfig(BaseConfig):
     dataset_class: str = ""
     dataset_kwargs: Dict[str, Any] = field(default_factory=dict)
     
-    # 🆕 训练器配置 - 支持 RollingDailyTrainer / DynamicGraphTrainer
-    trainer_class: str = ""  # '' 表示使用默认训练, 'RollingDailyTrainer' / 'DynamicGraphTrainer'
+    # 🆕 训练器配置 - 支持新训练架构
+    trainer_class: str = ""  # '' 使用默认, 'SimpleTrainer', 'RollingWindowTrainer', 'RollingDailyTrainer'
     trainer_kwargs: Dict[str, Any] = field(default_factory=dict)
     
     # 🆕 是否使用滚动窗口日批次加载器
@@ -325,12 +326,141 @@ class TaskConfig(BaseConfig):
         if not self.dataset_class:
             raise ValueError("dataset_class 不能为空")
         
-        # 验证训练器类名
-        valid_trainers = ['', 'RollingDailyTrainer', 'DynamicGraphTrainer']
+        # 🆕 更新有效训练器列表
+        valid_trainers = ['', 'SimpleTrainer', 'RollingWindowTrainer', 'RollingDailyTrainer']
         if self.trainer_class and self.trainer_class not in valid_trainers:
             raise ValueError(f"不支持的训练器: {self.trainer_class}，可选: {valid_trainers}")
         
         return True
+
+
+# ==================== 🆕 训练器配置（已统一到 model.train.base_trainer）====================
+# 为保持向后兼容，此处定义别名。实际使用请直接引用 model.train.TrainerConfig
+
+@dataclass
+class TrainerConfigDC(BaseConfig):
+    """
+    训练器配置 (DataClass版本) - 兼容层
+    
+    ⚠️ 建议直接使用 model.train.TrainerConfig，此类作为兼容别名保留。
+    
+    用于配置文件中定义训练参数，可序列化到 YAML/JSON。
+    字段与 model.train.TrainerConfig 保持一致。
+    
+    Args:
+        n_epochs: 训练轮数
+        lr: 学习率
+        weight_decay: L2 正则化系数
+        early_stop: 早停耐心值
+        optimizer: 优化器名称 ('adam', 'sgd', 'adamw')
+        loss_fn: 损失函数名称 ('mse', 'mae', 'huber', 'ic', 等)
+        loss_kwargs: 损失函数额外参数
+        use_scheduler: 是否使用学习率调度器
+        scheduler_type: 调度器类型 ('plateau', 'cosine', 'step')
+        scheduler_patience: 调度器耐心值
+        scheduler_factor: 学习率衰减因子
+        scheduler_min_lr: 最小学习率
+        lambda_corr: 相关性正则化权重
+        checkpoint_dir: 检查点保存目录
+        save_best_only: 是否只保存最佳模型
+        verbose: 是否打印详细日志
+        log_interval: 日志打印间隔（batch数）
+    """
+    # 基本训练参数
+    n_epochs: int = 100
+    lr: float = 0.001
+    weight_decay: float = 0.0
+    early_stop: int = 20
+    
+    # 优化器配置
+    optimizer: str = 'adam'
+    
+    # 损失函数配置
+    loss_fn: str = 'mse'
+    loss_kwargs: Dict[str, Any] = field(default_factory=dict)
+    lambda_corr: float = 0.0
+    
+    # 学习率调度器配置
+    use_scheduler: bool = True
+    scheduler_type: str = 'plateau'
+    scheduler_patience: int = 5
+    scheduler_factor: float = 0.5
+    scheduler_min_lr: float = 1e-6
+    
+    # 检查点配置
+    checkpoint_dir: Optional[str] = None
+    save_best_only: bool = True
+    
+    # 日志配置
+    verbose: bool = True
+    log_interval: int = 50  # 与 model.train.TrainerConfig 对齐
+    
+    def validate(self) -> bool:
+        """验证配置有效性（与 model.train.TrainerConfig.validate 保持一致）"""
+        if self.n_epochs <= 0:
+            raise ValueError("n_epochs 必须大于 0")
+        if self.lr <= 0:
+            raise ValueError("lr 必须大于 0")
+        if self.early_stop < 0:
+            raise ValueError("early_stop 不能为负数")
+        if self.optimizer not in ['adam', 'sgd', 'adamw']:
+            raise ValueError(f"不支持的优化器: {self.optimizer}")
+        
+        # 扩展损失函数支持列表，与 loss.get_loss_fn 保持一致
+        supported_losses = [
+            'mse', 'mae', 'huber', 'ic',  # 标准损失
+            'mse_corr', 'mae_corr', 'huber_corr', 'ic_corr',  # 带相关性正则
+            'combined', 'unified'  # 组合/统一损失
+        ]
+        if self.loss_fn not in supported_losses:
+            raise ValueError(
+                f"不支持的损失函数: {self.loss_fn}. "
+                f"支持的损失: {', '.join(supported_losses)}"
+            )
+        return True
+    
+    def to_trainer_config(self):
+        """
+        转换为 model.train.TrainerConfig 实例
+        
+        用于与训练引擎对接。
+        
+        Returns:
+            model.train.TrainerConfig 实例
+        """
+        from ..model.train import TrainerConfig
+        return TrainerConfig(**self.to_dict())
+
+
+@dataclass
+class RollingTrainerConfigDC(TrainerConfigDC):
+    """
+    滚动训练器配置 (DataClass版本) - 兼容层
+    
+    ⚠️ 建议直接使用 model.train.RollingTrainerConfig，此类作为兼容别名保留。
+    
+    继承 TrainerConfigDC，增加滚动窗口特有参数。
+    """
+    weight_inheritance: bool = True
+    save_each_window: bool = True
+    reset_optimizer: bool = True
+    reset_scheduler: bool = True
+    window_epochs: Optional[int] = None
+    gc_interval: int = 1
+    offload_to_cpu: bool = True
+    clear_cache_on_window_end: bool = True
+    
+    def to_rolling_trainer_config(self):
+        """
+        转换为 model.train.RollingTrainerConfig 实例
+        
+        用于与滚动训练引擎对接。
+        
+        Returns:
+            model.train.RollingTrainerConfig 实例
+        """
+        from ..model.train import RollingTrainerConfig
+        return RollingTrainerConfig(**self.to_dict())
 
 
 if __name__ == '__main__':

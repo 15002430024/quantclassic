@@ -1,6 +1,15 @@
 """
 build_industry_adj.py - 构建行业邻接矩阵
 
+⚠️ DEPRECATED: 此模块为静态基准工具，建议使用 data_processor.graph_builder 作为统一入口。
+
+推荐迁移方式:
+    from quantclassic.data_processor.graph_builder import GraphBuilderFactory
+    builder = GraphBuilderFactory.create({'type': 'industry', 'stock_col': 'ts_code'})
+    adj = builder.build(df)
+
+---
+
 根据财通研报的要求，基于行业分类构建静态邻接矩阵：
 - 同行业股票之间 A[i,j] = 1
 - 不同行业股票之间 A[i,j] = 0
@@ -19,6 +28,7 @@ Usage:
     )
 """
 
+import warnings
 import torch
 import numpy as np
 import pandas as pd
@@ -38,6 +48,9 @@ def build_industry_adjacency_matrix(
     """
     基于行业分类构建邻接矩阵（研报 baseline）
     
+    .. deprecated::
+        此函数为遗产基准工具，建议使用 `data_processor.graph_builder.GraphBuilderFactory` 统一入口。
+    
     同行业股票之间连接权重为 1，不同行业为 0。
     
     Args:
@@ -53,6 +66,12 @@ def build_industry_adjacency_matrix(
         stock_list: 股票代码列表（顺序与矩阵索引对应）
         stock_to_idx: 股票代码到索引的映射字典
     """
+    warnings.warn(
+        "build_industry_adjacency_matrix 已弃用，建议使用 "
+        "data_processor.graph_builder.GraphBuilderFactory.create({'type': 'industry'}) 作为统一入口",
+        DeprecationWarning,
+        stacklevel=2
+    )
     logger = logging.getLogger(__name__)
     
     # 1. 获取唯一股票列表和行业信息

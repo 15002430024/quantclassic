@@ -6,15 +6,17 @@ DataConfig - 数据管理配置类
 """
 
 import os
-import sys
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any, Tuple
 from pathlib import Path
 import yaml
 
-# 添加父目录到路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config.base_config import BaseConfig
+# 使用相对导入（相对于 quantclassic 包）
+try:
+    from ..config.base_config import BaseConfig
+except ImportError:
+    # 直接运行脚本时的后备导入
+    from config.base_config import BaseConfig
 
 
 @dataclass

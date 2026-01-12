@@ -17,15 +17,34 @@ logger = logging.getLogger(__name__)
 class FeatureProcessor:
     """特征处理引擎 - 实现各种数据处理算法"""
     
-    def __init__(self, groupby_columns: List[str] = None):
+    def __init__(self, groupby_columns: List[str] = None, stock_col: str = 'order_book_id'):
         """
         初始化特征处理器
         
         Args:
             groupby_columns: 默认分组列
+            stock_col: 股票代码列名，兼容 'order_book_id'(RiceQuant) 和 'ts_code'(Tushare/DataManager)
         """
         self.groupby_columns = groupby_columns or ['trade_date']
+        self.stock_col = stock_col
         self.fitted_params = {}  # 存储拟合参数
+    
+    def set_stock_col(self, df: pd.DataFrame) -> str:
+        """
+        根据数据自动检测并设置股票代码列名
+        
+        Args:
+            df: 数据框
+            
+        Returns:
+            实际使用的股票代码列名
+        """
+        candidates = ['order_book_id', 'ts_code', 'stock_code', 'symbol']
+        for col in candidates:
+            if col in df.columns:
+                self.stock_col = col
+                return col
+        return self.stock_col
     
     # ========== 基础处理 ==========
     
@@ -82,7 +101,15 @@ class FeatureProcessor:
             df[features] = df[features].fillna(0)
         
         elif method == 'forward':
-            df[features] = df.groupby('order_book_id')[features].fillna(method='ffill')
+            # 使用自适应的股票代码列名
+            stock_col = self.stock_col
+            if stock_col not in df.columns:
+                # 尝试自动检测
+                for col in ['order_book_id', 'ts_code', 'stock_code', 'symbol']:
+                    if col in df.columns:
+                        stock_col = col
+                        break
+            df[features] = df.groupby(stock_col)[features].fillna(method='ffill')
         
         elif method in ['median', 'mean']:
             # 先用行业内统计量填充
@@ -145,13 +172,21 @@ class FeatureProcessor:
                 std_vals = grouped.transform(lambda x: x.std(ddof=ddof))
                 
             elif normalize_mode == 'time_series':
-                # 时序标准化：按股票分组
-                if 'order_book_id' in df.columns:
-                    grouped = df.groupby('order_book_id')[features]
+                # 时序标准化：按股票分组（自适应列名）
+                stock_col = self.stock_col
+                if stock_col not in df.columns:
+                    # 尝试自动检测
+                    for col in ['order_book_id', 'ts_code', 'stock_code', 'symbol']:
+                        if col in df.columns:
+                            stock_col = col
+                            break
+                
+                if stock_col in df.columns:
+                    grouped = df.groupby(stock_col)[features]
                     mean_vals = grouped.transform('mean')
                     std_vals = grouped.transform(lambda x: x.std(ddof=ddof))
                 else:
-                    logger.warning(f"时序标准化需要order_book_id列，回退到全局标准化")
+                    logger.warning(f"时序标准化需要股票代码列（尝试: order_book_id/ts_code/stock_code/symbol），回退到全局标准化")
                     mean_vals = df[features].mean()
                     std_vals = df[features].std(ddof=ddof)
             
@@ -221,12 +256,20 @@ class FeatureProcessor:
                     col_max = df.groupby(self.groupby_columns)[col].transform('max')
                 
                 elif normalize_mode == 'time_series':
-                    # 时序归一化：按股票分组（每只股票自身时序归一化）
-                    if 'order_book_id' in df.columns:
-                        col_min = df.groupby('order_book_id')[col].transform('min')
-                        col_max = df.groupby('order_book_id')[col].transform('max')
+                    # 时序归一化：按股票分组（自适应列名）
+                    stock_col = self.stock_col
+                    if stock_col not in df.columns:
+                        # 尝试自动检测
+                        for candidate in ['order_book_id', 'ts_code', 'stock_code', 'symbol']:
+                            if candidate in df.columns:
+                                stock_col = candidate
+                                break
+                    
+                    if stock_col in df.columns:
+                        col_min = df.groupby(stock_col)[col].transform('min')
+                        col_max = df.groupby(stock_col)[col].transform('max')
                     else:
-                        logger.warning(f"时序归一化需要order_book_id列，回退到全局归一化")
+                        logger.warning(f"时序归一化需要股票代码列（尝试: order_book_id/ts_code/stock_code/symbol），回退到全局归一化")
                         col_min = df[col].min()
                         col_max = df[col].max()
                 

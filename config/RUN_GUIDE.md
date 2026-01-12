@@ -227,3 +227,54 @@ done
 - [完整流程指南](./examples/FULL_PIPELINE_GUIDE.md)
 - [YAML 配置说明](./templates/YAML_USAGE_GUIDE.md)
 - [快速开始](./QUICKSTART.md)
+---
+
+## 🆕 训练架构 (2026-01 重构)
+
+### 新训练器层次
+
+```
+model/train/
+├── base_trainer.py          # BaseTrainer 基类
+├── simple_trainer.py        # SimpleTrainer 常规训练
+├── rolling_window_trainer.py # RollingWindowTrainer 滚动窗口
+└── rolling_daily_trainer.py  # RollingDailyTrainer 日级滚动
+```
+
+### TaskConfig 训练器选项
+
+```yaml
+task:
+  # 选择训练器
+  trainer_class: RollingDailyTrainer  # 可选: SimpleTrainer, RollingWindowTrainer, RollingDailyTrainer
+  
+  # 数据加载器选项
+  use_rolling_loaders: true   # 启用滚动窗口加载器
+  use_daily_loaders: false    # 启用日批次加载器
+  
+  # 训练器参数
+  trainer_kwargs:
+    n_epochs: 20
+    lr: 0.001
+    early_stop: 10
+    loss_fn: mse              # 可选: mse, mae, huber, ic, ic_corr
+    lambda_corr: 0.01         # 相关性正则化权重
+    weight_inheritance: true  # 滚动训练时继承权重
+    save_each_window: true    # 保存每个窗口模型
+```
+
+### 训练器对比
+
+| 特性 | SimpleTrainer | RollingWindowTrainer | RollingDailyTrainer |
+|------|---------------|---------------------|---------------------|
+| 单窗口训练 | ✅ | - | - |
+| 滚动窗口 | - | ✅ | ✅ |
+| 权重继承 | - | ✅ | ✅ |
+| 显存管理 | - | - | ✅ |
+| 日级预测 | - | - | ✅ |
+
+### ⚠️ 废弃通知
+
+1. **`DynamicGraphTrainer`** 已废弃，改用 `SimpleTrainer` + `use_daily_loaders`
+2. **`DataManager.create_rolling_window_trainer()`** 已移除，请使用 `model.train.RollingDailyTrainer`
+3. **`model.rolling_daily_trainer`** 模块已改为 shim，请改用 `model.train`

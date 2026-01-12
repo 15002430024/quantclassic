@@ -2,6 +2,10 @@
 PyTorch Models - PyTorch 深度学习模型实现
 
 提供常用的时序预测模型
+
+🆕 重构说明 (2026-01):
+- fit() 方法已代理到 model/train/SimpleTrainer
+- 保持原有接口兼容，内部使用统一训练引擎
 """
 
 import torch
@@ -9,6 +13,7 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 from typing import Optional, Tuple
+from pathlib import Path
 from tqdm import tqdm
 
 from .base_model import PyTorchModel
@@ -34,14 +39,31 @@ class LSTMNet(nn.Module):
         self.fc = nn.Linear(hidden_size, 1)
         self.dropout = nn.Dropout(dropout)
     
-    def forward(self, x):
+    def forward(self, x, return_hidden: bool = False):
+        """
+        前向传播
+        
+        Args:
+            x: [batch, seq_len, features] 输入序列
+            return_hidden: 是否返回隐藏特征（用于相关性正则化）
+            
+        Returns:
+            如果 return_hidden=False: 预测值 [batch]
+            如果 return_hidden=True: (预测值, 隐藏特征) 元组
+        """
         # x: [batch, seq_len, features]
         lstm_out, _ = self.lstm(x)
         # 取最后一个时间步
-        last_out = lstm_out[:, -1, :]
-        out = self.dropout(last_out)
-        out = self.fc(out)
-        return out.squeeze(-1)
+        last_out = lstm_out[:, -1, :]  # [batch, hidden_size]
+        
+        if return_hidden:
+            # 返回元组：(预测值, 隐藏特征)
+            out = self.dropout(last_out)
+            pred = self.fc(out).squeeze(-1)
+            return pred, last_out  # 返回未经过fc前的隐藏特征
+        else:
+            out = self.dropout(last_out)
+            return self.fc(out).squeeze(-1)
 
 
 @register_model('lstm')
@@ -102,85 +124,55 @@ class LSTMModel(PyTorchModel):
         """
         训练模型
         
+        🆕 重构: 代理到 SimpleTrainer，保持接口兼容
+        
         Args:
             train_loader: 训练数据加载器
             valid_loader: 验证数据加载器
             save_path: 模型保存路径
+            
+        Returns:
+            训练结果字典（包含 train_losses, valid_losses, best_epoch 等）
         """
         self.logger.info("开始训练 LSTM 模型...")
         
-        best_valid_loss = float('inf')
-        patience_counter = 0
+        # 🆕 使用 SimpleTrainer 代理训练
+        from .train import SimpleTrainer, TrainerConfig
         
-        for epoch in range(self.n_epochs):
-            # 训练
-            train_loss = self._train_epoch(train_loader)
-            self.train_losses.append(train_loss)
-            
-            # 验证
-            if valid_loader is not None:
-                valid_loss = self._valid_epoch(valid_loader)
-                self.valid_losses.append(valid_loss)
-                
-                self.logger.info(
-                    f"Epoch {epoch+1}/{self.n_epochs} - "
-                    f"Train Loss: {train_loss:.6f}, Valid Loss: {valid_loss:.6f}"
-                )
-                
-                # 早停检查
-                if valid_loss < best_valid_loss:
-                    best_valid_loss = valid_loss
-                    self.best_score = -valid_loss
-                    self.best_epoch = epoch
-                    patience_counter = 0
-                    
-                    # 保存最佳模型
-                    if save_path:
-                        self.save_model(save_path)
-                else:
-                    patience_counter += 1
-                    if patience_counter >= self.early_stop:
-                        self.logger.info(f"早停触发 at epoch {epoch+1}")
-                        break
-            else:
-                self.logger.info(f"Epoch {epoch+1}/{self.n_epochs} - Train Loss: {train_loss:.6f}")
+        trainer_config = TrainerConfig(
+            n_epochs=self.n_epochs,
+            lr=self.lr,
+            early_stop=self.early_stop,
+            optimizer=self.optimizer_name,
+            loss_fn=self.loss_fn_name,
+            loss_kwargs=self.loss_kwargs,
+            use_scheduler=self.use_scheduler,
+            scheduler_type=self.scheduler_type,
+            scheduler_patience=self.scheduler_patience,
+            scheduler_factor=self.scheduler_factor,
+            scheduler_min_lr=self.scheduler_min_lr,
+            lambda_corr=self.lambda_corr,
+            checkpoint_dir=str(Path(save_path).parent) if save_path else None,
+            save_best_only=True,
+        )
         
+        trainer = SimpleTrainer(self.model, trainer_config, str(self.device))
+        result = trainer.train(train_loader, valid_loader, save_path=save_path)
+        
+        # 同步训练状态到当前实例
+        self.train_losses = result['train_losses']
+        self.valid_losses = result['valid_losses']
+        self.lr_history = result['lr_history']
+        self.best_score = -result['best_score']  # SimpleTrainer 存的是 loss，转为负
+        self.best_epoch = result['best_epoch']
         self.fitted = True
-        self.logger.info(f"训练完成! 最佳 epoch: {self.best_epoch+1}")
+        
+        self.logger.info(f"训练完成! 最佳 epoch: {self.best_epoch + 1}")
+        
+        return result
     
-    def predict(self, test_loader, return_numpy: bool = True):
-        """
-        预测
-        
-        Args:
-            test_loader: 测试数据加载器
-            return_numpy: 是否返回 numpy 数组
-            
-        Returns:
-            预测结果
-        """
-        if not self.fitted:
-            raise ValueError("模型未训练，请先调用 fit()")
-        
-        self.model.eval()
-        predictions = []
-        
-        with torch.no_grad():
-            for batch_x, _ in test_loader:
-                batch_x = batch_x.to(self.device)
-                pred = self.model(batch_x)
-                predictions.append(pred.cpu())
-        
-        # 【修复】处理空预测列表（测试集为空时）
-        if len(predictions) == 0:
-            import numpy as np
-            return np.array([]) if return_numpy else torch.tensor([])
-        
-        predictions = torch.cat(predictions, dim=0)
-        
-        if return_numpy:
-            return predictions.numpy()
-        return predictions
+    # 🆕 predict() 方法已移至基类 PyTorchModel（2026-01-11 重构）
+    # 如需自定义前向逻辑，可覆写 _forward_for_predict() 钩子
 
 
 # ==================== GRU 模型 ====================
@@ -202,12 +194,28 @@ class GRUNet(nn.Module):
         self.fc = nn.Linear(hidden_size, 1)
         self.dropout = nn.Dropout(dropout)
     
-    def forward(self, x):
+    def forward(self, x, return_hidden: bool = False):
+        """
+        前向传播
+        
+        Args:
+            x: [batch, seq_len, features] 输入序列
+            return_hidden: 是否返回隐藏特征（用于相关性正则化）
+            
+        Returns:
+            如果 return_hidden=False: 预测值 [batch]
+            如果 return_hidden=True: (预测值, 隐藏特征) 元组
+        """
         gru_out, _ = self.gru(x)
-        last_out = gru_out[:, -1, :]
-        out = self.dropout(last_out)
-        out = self.fc(out)
-        return out.squeeze(-1)
+        last_out = gru_out[:, -1, :]  # [batch, hidden_size]
+        
+        if return_hidden:
+            out = self.dropout(last_out)
+            pred = self.fc(out).squeeze(-1)
+            return pred, last_out
+        else:
+            out = self.dropout(last_out)
+            return self.fc(out).squeeze(-1)
 
 
 @register_model('gru')
@@ -244,68 +252,58 @@ class GRUModel(PyTorchModel):
         self.logger.info(f"  层数: {num_layers}")
     
     def fit(self, train_loader, valid_loader=None, save_path: Optional[str] = None):
-        """训练模型"""
+        """
+        训练模型
+        
+        🆕 重构: 代理到 SimpleTrainer，保持接口兼容
+        
+        Args:
+            train_loader: 训练数据加载器
+            valid_loader: 验证数据加载器
+            save_path: 模型保存路径
+            
+        Returns:
+            训练结果字典
+        """
         self.logger.info("开始训练 GRU 模型...")
         
-        best_valid_loss = float('inf')
-        patience_counter = 0
+        # 🆕 使用 SimpleTrainer 代理训练
+        from .train import SimpleTrainer, TrainerConfig
         
-        for epoch in range(self.n_epochs):
-            train_loss = self._train_epoch(train_loader)
-            self.train_losses.append(train_loss)
-            
-            if valid_loader is not None:
-                valid_loss = self._valid_epoch(valid_loader)
-                self.valid_losses.append(valid_loss)
-                
-                self.logger.info(
-                    f"Epoch {epoch+1}/{self.n_epochs} - "
-                    f"Train Loss: {train_loss:.6f}, Valid Loss: {valid_loss:.6f}"
-                )
-                
-                if valid_loss < best_valid_loss:
-                    best_valid_loss = valid_loss
-                    self.best_score = -valid_loss
-                    self.best_epoch = epoch
-                    patience_counter = 0
-                    
-                    if save_path:
-                        self.save_model(save_path)
-                else:
-                    patience_counter += 1
-                    if patience_counter >= self.early_stop:
-                        self.logger.info(f"早停触发 at epoch {epoch+1}")
-                        break
-            else:
-                self.logger.info(f"Epoch {epoch+1}/{self.n_epochs} - Train Loss: {train_loss:.6f}")
+        trainer_config = TrainerConfig(
+            n_epochs=self.n_epochs,
+            lr=self.lr,
+            early_stop=self.early_stop,
+            optimizer=self.optimizer_name,
+            loss_fn=self.loss_fn_name,
+            loss_kwargs=self.loss_kwargs,
+            use_scheduler=self.use_scheduler,
+            scheduler_type=self.scheduler_type,
+            scheduler_patience=self.scheduler_patience,
+            scheduler_factor=self.scheduler_factor,
+            scheduler_min_lr=self.scheduler_min_lr,
+            lambda_corr=self.lambda_corr,
+            checkpoint_dir=str(Path(save_path).parent) if save_path else None,
+            save_best_only=True,
+        )
         
+        trainer = SimpleTrainer(self.model, trainer_config, str(self.device))
+        result = trainer.train(train_loader, valid_loader, save_path=save_path)
+        
+        # 同步训练状态
+        self.train_losses = result['train_losses']
+        self.valid_losses = result['valid_losses']
+        self.lr_history = result['lr_history']
+        self.best_score = -result['best_score']
+        self.best_epoch = result['best_epoch']
         self.fitted = True
-        self.logger.info(f"训练完成! 最佳 epoch: {self.best_epoch+1}")
+        
+        self.logger.info(f"训练完成! 最佳 epoch: {self.best_epoch + 1}")
+        
+        return result
     
-    def predict(self, test_loader, return_numpy: bool = True):
-        """预测"""
-        if not self.fitted:
-            raise ValueError("模型未训练，请先调用 fit()")
-        
-        self.model.eval()
-        predictions = []
-        
-        with torch.no_grad():
-            for batch_x, _ in test_loader:
-                batch_x = batch_x.to(self.device)
-                pred = self.model(batch_x)
-                predictions.append(pred.cpu())
-        
-        # 【修复】处理空预测列表（测试集为空时）
-        if len(predictions) == 0:
-            import numpy as np
-            return np.array([]) if return_numpy else torch.tensor([])
-        
-        predictions = torch.cat(predictions, dim=0)
-        
-        if return_numpy:
-            return predictions.numpy()
-        return predictions
+    # 🆕 predict() 方法已移至基类 PyTorchModel（2026-01-11 重构）
+    # 修复：旧版 `for batch_x, _` 无法处理图/日级 loader 的 unpack 错误
 
 
 # ==================== Transformer 模型 ====================
@@ -340,15 +338,32 @@ class TransformerNet(nn.Module):
         self.fc = nn.Linear(d_model, 1)
         self.dropout = nn.Dropout(dropout)
     
-    def forward(self, x):
+    def forward(self, x, return_hidden: bool = False):
+        """
+        前向传播
+        
+        Args:
+            x: [batch, seq_len, features] 输入序列
+            return_hidden: 是否返回隐藏特征（用于相关性正则化）
+            
+        Returns:
+            如果 return_hidden=False: 预测值 [batch]
+            如果 return_hidden=True: (预测值, 隐藏特征) 元组
+        """
         # x: [batch, seq_len, features]
         x = self.input_proj(x)
         x = self.transformer(x)
         # 取最后一个时间步
-        x = x[:, -1, :]
-        x = self.dropout(x)
-        out = self.fc(x)
-        return out.squeeze(-1)
+        x = x[:, -1, :]  # [batch, d_model]
+        
+        if return_hidden:
+            x_hidden = x.clone()  # 保存dropout前的隐藏特征
+            x = self.dropout(x)
+            pred = self.fc(x).squeeze(-1)
+            return pred, x_hidden
+        else:
+            x = self.dropout(x)
+            return self.fc(x).squeeze(-1)
 
 
 @register_model('transformer')
@@ -402,6 +417,9 @@ class TransformerModel(PyTorchModel):
         """训练模型"""
         self.logger.info("开始训练 Transformer 模型...")
         
+        # 🆕 创建学习率调度器
+        self.scheduler = self._get_scheduler()
+        
         best_valid_loss = float('inf')
         patience_counter = 0
         
@@ -418,6 +436,9 @@ class TransformerModel(PyTorchModel):
                     f"Train Loss: {train_loss:.6f}, Valid Loss: {valid_loss:.6f}"
                 )
                 
+                # 🆕 调用学习率调度器
+                self._step_scheduler(valid_loss)
+                
                 if valid_loss < best_valid_loss:
                     best_valid_loss = valid_loss
                     self.best_score = -valid_loss
@@ -433,34 +454,16 @@ class TransformerModel(PyTorchModel):
                         break
             else:
                 self.logger.info(f"Epoch {epoch+1}/{self.n_epochs} - Train Loss: {train_loss:.6f}")
+                self._step_scheduler(train_loss)
+                self.best_epoch = epoch
         
         self.fitted = True
-        self.logger.info(f"训练完成! 最佳 epoch: {self.best_epoch+1}")
+        if valid_loader is not None:
+            self.logger.info(f"训练完成! 最佳 epoch: {self.best_epoch+1}")
+        else:
+            self.logger.info(f"训练完成! (无验证集，共 {self.n_epochs} epochs)")
     
-    def predict(self, test_loader, return_numpy: bool = True):
-        """预测"""
-        if not self.fitted:
-            raise ValueError("模型未训练，请先调用 fit()")
-        
-        self.model.eval()
-        predictions = []
-        
-        with torch.no_grad():
-            for batch_x, _ in test_loader:
-                batch_x = batch_x.to(self.device)
-                pred = self.model(batch_x)
-                predictions.append(pred.cpu())
-        
-        # 【修复】处理空预测列表（测试集为空时）
-        if len(predictions) == 0:
-            import numpy as np
-            return np.array([]) if return_numpy else torch.tensor([])
-        
-        predictions = torch.cat(predictions, dim=0)
-        
-        if return_numpy:
-            return predictions.numpy()
-        return predictions
+    # 🆕 predict() 方法已移至基类 PyTorchModel（2026-01-11 重构）
 
 
 # ==================== VAE 模型 ====================
@@ -728,6 +731,9 @@ class VAEModel(PyTorchModel):
         """训练模型"""
         self.logger.info("开始训练 VAE 模型...")
         
+        # 🆕 创建学习率调度器
+        self.scheduler = self._get_scheduler()
+        
         best_valid_loss = float('inf')
         patience_counter = 0
         
@@ -744,6 +750,9 @@ class VAEModel(PyTorchModel):
                     f"Train Loss: {train_loss:.6f}, Valid Loss: {valid_loss:.6f}"
                 )
                 
+                # 🆕 调用学习率调度器
+                self._step_scheduler(valid_loss)
+                
                 if valid_loss < best_valid_loss:
                     best_valid_loss = valid_loss
                     self.best_score = -valid_loss
@@ -759,13 +768,18 @@ class VAEModel(PyTorchModel):
                         break
             else:
                 self.logger.info(f"Epoch {epoch+1}/{self.n_epochs} - Train Loss: {train_loss:.6f}")
+                self._step_scheduler(train_loss)
+                self.best_epoch = epoch
         
         self.fitted = True
-        self.logger.info(f"训练完成! 最佳 epoch: {self.best_epoch+1}")
+        if valid_loader is not None:
+            self.logger.info(f"训练完成! 最佳 epoch: {self.best_epoch+1}")
+        else:
+            self.logger.info(f"训练完成! (无验证集，共 {self.n_epochs} epochs)")
     
     def predict(self, test_loader, return_numpy: bool = True, return_latent: bool = False):
         """
-        预测
+        预测（🆕 精简版：return_latent=False 时复用基类实现）
         
         Args:
             test_loader: 测试数据加载器
@@ -776,6 +790,11 @@ class VAEModel(PyTorchModel):
             如果 return_latent=False: 预测结果
             如果 return_latent=True: (预测结果, 潜在特征)
         """
+        # 🆕 方案 A：不需要潜变量时，直接复用基类实现
+        if not return_latent:
+            return super().predict(test_loader, return_numpy)
+        
+        # 需要潜变量时，使用自定义逻辑
         if not self.fitted:
             raise ValueError("模型未训练，请先调用 fit()")
         
@@ -784,31 +803,39 @@ class VAEModel(PyTorchModel):
         latent_features = []
         
         with torch.no_grad():
-            for batch_x, _ in test_loader:
+            for batch_data in test_loader:
+                batch_x, _, _, _ = self._parse_batch_data(batch_data)
                 batch_x = batch_x.to(self.device)
-                _, y_pred, mu, _, z = self.model(batch_x)
+                _, y_pred, _, _, z = self.model(batch_x)
                 predictions.append(y_pred.cpu())
-                if return_latent:
-                    latent_features.append(z.cpu())
+                latent_features.append(z.cpu())
+        
+        # 空处理
+        if len(predictions) == 0:
+            import numpy as np
+            empty = np.array([]) if return_numpy else torch.tensor([])
+            return empty, empty
         
         predictions = torch.cat(predictions, dim=0)
-        
-        if return_latent:
-            latent_features = torch.cat(latent_features, dim=0)
-            if return_numpy:
-                return predictions.numpy(), latent_features.numpy()
-            return predictions, latent_features
+        latent_features = torch.cat(latent_features, dim=0)
         
         if return_numpy:
-            return predictions.numpy()
-        return predictions
+            return predictions.numpy(), latent_features.numpy()
+        return predictions, latent_features
+    
+    def _forward_for_predict(self, x, adj=None, idx=None):
+        """🆕 VAE 预测前向钩子 - 仅返回 y_pred"""
+        _, y_pred, _, _, _ = self.model(x)
+        return y_pred
     
     def extract_latent(self, test_loader, return_numpy: bool = True):
         """
         提取潜在特征（用于因子生成）
         
+        🆕 2026-01-11 修复：使用 _parse_batch_data 支持图/日级 loader
+        
         Args:
-            test_loader: 数据加载器
+            test_loader: 数据加载器（支持 (x,y), (x,y,adj,...), dict 等格式）
             return_numpy: 是否返回 numpy 数组
             
         Returns:
@@ -822,12 +849,21 @@ class VAEModel(PyTorchModel):
         z_list = []
         
         with torch.no_grad():
-            for batch_x, _ in test_loader:
+            for batch_data in test_loader:
+                # 🆕 使用基类统一的 batch 解析（替代 for batch_x, _ in ...)
+                batch_x, _, _, _ = self._parse_batch_data(batch_data)
+                
                 batch_x = batch_x.to(self.device)
                 mu, logvar = self.model.encode(batch_x)
                 z = self.model.reparameterize(mu, logvar)
                 mu_list.append(mu.cpu())
                 z_list.append(z.cpu())
+        
+        # 处理空输入
+        if len(mu_list) == 0:
+            import numpy as np
+            empty = np.array([]) if return_numpy else torch.tensor([])
+            return empty, empty
         
         mu_features = torch.cat(mu_list, dim=0)
         z_features = torch.cat(z_list, dim=0)

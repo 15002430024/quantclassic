@@ -6,7 +6,7 @@ DataManager - 数据管理主控类
 
 import os
 import pandas as pd
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Union
 import logging
 from pathlib import Path
 import pickle
@@ -18,7 +18,54 @@ from .feature_engineer import FeatureEngineer
 from .splitter import create_splitter, DataSplitter
 from .validator import DataValidator, ValidationReport
 from .factory import DatasetFactory, DatasetCollection, LoaderCollection
-from .rolling_trainer import RollingWindowTrainer
+# ⚠️ RollingWindowTrainer 已移除 - 请使用 model.train.RollingWindowTrainer
+
+
+# =============================================================================
+# 🆕 日批次构建辅助函数（去重 create_daily_loaders 与 create_rolling_daily_loaders）
+# =============================================================================
+def _normalize_graph_builder_config(
+    gb_config: Optional[Union[Dict, Any]],
+    raw_data: Optional[pd.DataFrame] = None,
+    stock_col: str = 'ts_code',
+    logger: Optional[logging.Logger] = None
+) -> Optional[Dict]:
+    """
+    统一处理 graph_builder_config，确保返回 dict 类型，并注入行业映射（如需要）
+    
+    Args:
+        gb_config: 图构建配置（dict 或 dataclass）
+        raw_data: 原始数据（用于提取行业映射）
+        stock_col: 股票代码列名
+        logger: 日志记录器
+        
+    Returns:
+        标准化后的 dict 配置，或 None
+    """
+    if gb_config is None:
+        return None
+    
+    # 统一转换为 dict
+    if isinstance(gb_config, dict):
+        gb_dict = gb_config.copy()
+    elif hasattr(gb_config, 'to_dict'):
+        gb_dict = gb_config.to_dict()
+    else:
+        gb_dict = dict(gb_config)
+    
+    # 如果是行业图，预先构建全局股票-行业映射
+    if gb_dict.get('type') == 'industry':
+        industry_col = gb_dict.get('industry_col', 'industry_name')
+        if raw_data is not None and industry_col in raw_data.columns:
+            stock_industry_mapping = dict(zip(
+                raw_data[stock_col],
+                raw_data[industry_col]
+            ))
+            gb_dict['stock_industry_mapping'] = stock_industry_mapping
+            if logger:
+                logger.info(f"  已构建全局股票-行业映射: {len(stock_industry_mapping)} 只股票")
+    
+    return gb_dict
 
 
 class DataManager:
@@ -332,7 +379,8 @@ class DataManager:
     
     def get_dataloaders(self, batch_size: Optional[int] = None,
                        num_workers: Optional[int] = None,
-                       shuffle_train: Optional[bool] = None) -> LoaderCollection:
+                       shuffle_train: Optional[bool] = None,
+                       use_cross_sectional: bool = False) -> LoaderCollection:
         """
         获取数据加载器
         
@@ -340,6 +388,7 @@ class DataManager:
             batch_size: 批量大小（None则使用配置值）
             num_workers: 工作进程数（None则使用配置值）
             shuffle_train: 是否打乱训练集（None则使用配置值）
+            use_cross_sectional: 🆕 是否使用截面批采样（IC/相关性损失场景必须开启）
             
         Returns:
             LoaderCollection对象
@@ -350,7 +399,8 @@ class DataManager:
         return self._datasets.get_loaders(
             batch_size=batch_size or self.config.batch_size,
             num_workers=num_workers or self.config.num_workers,
-            shuffle_train=shuffle_train if shuffle_train is not None else self.config.shuffle_train
+            shuffle_train=shuffle_train if shuffle_train is not None else self.config.shuffle_train,
+            use_cross_sectional=use_cross_sectional  # 🆕 透传截面采样参数
         )
     
     def create_daily_loaders(
@@ -396,8 +446,14 @@ class DataManager:
         # 创建图构建器
         graph_builder = None
         if gb_config:
-            graph_builder = GraphBuilderFactory.create(gb_config)
-            self.logger.info(f"图构建器类型: {gb_config.get('type', 'corr')}")
+            # 🆕 使用公共辅助函数统一处理配置
+            gb_dict = _normalize_graph_builder_config(
+                gb_config, self._raw_data, self.config.stock_col, self.logger
+            )
+            # 🆕 确保 stock_col 透传到图构建器，避免 ts_code 场景退回默认值
+            gb_dict.setdefault('stock_col', self.config.stock_col)
+            graph_builder = GraphBuilderFactory.create(gb_dict)
+            self.logger.info(f"图构建器类型: {gb_dict.get('type', 'corr')}, stock_col: {gb_dict.get('stock_col')}")
         
         # 创建数据集
         def make_daily_dataset(df):
@@ -515,24 +571,12 @@ class DataManager:
         from quantclassic.data_processor.graph_builder import GraphBuilderFactory
         from collections import namedtuple
         
-        # 创建图构建器
+        # 🆕 使用公共辅助函数统一处理配置
         gb_config = graph_builder_config or getattr(self.config, 'graph_builder_config', None)
-        graph_builder = None
-        if gb_config:
-            # 🆕 如果是行业图，预先构建全局股票-行业映射
-            gb_dict = gb_config if isinstance(gb_config, dict) else gb_config.to_dict()
-            if gb_dict.get('type') == 'industry':
-                # 从原始数据中提取股票-行业映射
-                industry_col = gb_dict.get('industry_col', 'industry_name')
-                stock_col = self.config.stock_col
-                if hasattr(self, 'df') and self.df is not None and industry_col in self.df.columns:
-                    stock_industry_mapping = dict(zip(
-                        self.df[stock_col],
-                        self.df[industry_col]
-                    ))
-                    gb_dict['stock_industry_mapping'] = stock_industry_mapping
-                    self.logger.info(f"  已构建全局股票-行业映射: {len(stock_industry_mapping)} 只股票")
-            graph_builder = GraphBuilderFactory.create(gb_dict)
+        gb_dict = _normalize_graph_builder_config(
+            gb_config, self._raw_data, self.config.stock_col, self.logger
+        )
+        graph_builder = GraphBuilderFactory.create(gb_dict) if gb_dict else None
         
         DailyLoaderCollection = namedtuple('DailyLoaderCollection', ['train', 'val', 'test'])
         
@@ -705,7 +749,16 @@ class DataManager:
         self.create_datasets()
         
         # 6. 创建数据加载器
-        loaders = self.get_dataloaders()
+        # 🆕 根据 use_daily_batch 配置决定返回类型
+        use_daily = getattr(self.config, 'use_daily_batch', False)
+        if use_daily:
+            self.logger.info("🆕 use_daily_batch=True，创建日批次加载器")
+            loaders = self.create_daily_loaders(
+                graph_builder_config=getattr(self.config, 'graph_builder_config', None),
+                shuffle_dates=getattr(self.config, 'shuffle_dates', True)
+            )
+        else:
+            loaders = self.get_dataloaders()
         
         self.logger.info("\n" + "=" * 80)
         self.logger.info("✅ 完整数据处理流水线完成")
@@ -837,70 +890,38 @@ class DataManager:
     def create_rolling_window_trainer(
         self, 
         stock_universe: Optional[List[str]] = None
-    ) -> Optional[RollingWindowTrainer]:
+    ):
         """
-        创建滚动窗口训练器
+        ⚠️ 已废弃并移除 - 请使用 model.train.RollingWindowTrainer 或 RollingDailyTrainer
         
-        只有在使用 rolling 策略时才能创建训练器
-        
-        Args:
-            stock_universe: 全局股票代码列表（用于GAT邻接矩阵统一ID映射）。
-                           如果为None，将自动从全量数据中提取。
-        
-        Returns:
-            RollingWindowTrainer 对象，如果不是rolling策略则返回None
+        .. deprecated:: 2026.01
+            数据层不应包含训练循环。此方法已移除。
             
+            请改用:
+            >>> from quantclassic.model.train import RollingWindowTrainer, RollingDailyTrainer
+            >>> rolling_loaders = dm.create_rolling_daily_loaders()
+            >>> trainer = RollingDailyTrainer(model_factory=..., config=...)
+            >>> trainer.fit(rolling_loaders)
+        
         Raises:
-            ValueError: 如果滚动窗口数据不可用
-            
-        Example:
-            >>> dm = DataManager(config=data_config)
-            >>> loaders = dm.run_full_pipeline()
-            >>> # 自动提取全局股票池
-            >>> trainer = dm.create_rolling_window_trainer()
-            >>> # 或手动指定股票池
-            >>> trainer = dm.create_rolling_window_trainer(stock_universe=['000001.SZ', ...])
-            >>> results = trainer.train_all_windows(
-            ...     model_class=HybridGraphModel,
-            ...     model_config=model_config,
-            ...     save_dir='output/rolling_models',
-            ...     dynamic_adj=True,
-            ...     adj_config={'return_col': 'y_ret_10d', 'top_k': 10}
-            ... )
-            >>> predictions = trainer.predict_all_windows(results)
+            DeprecationWarning: 始终抛出，指导用户迁移到新 API
         """
-        if self.config.split_strategy != 'rolling':
-            self.logger.warning(f"当前划分策略为 '{self.config.split_strategy}'，不支持滚动窗口训练")
-            return None
-        
-        if not hasattr(self, '_rolling_windows') or not self._rolling_windows:
-            raise ValueError(
-                "滚动窗口数据不可用。请先运行 run_full_pipeline() 以生成滚动窗口数据。"
-            )
-        
-        if not self._feature_cols:
-            raise ValueError(
-                "特征列不可用。请先运行 run_full_pipeline() 以准备数据。"
-            )
-        
-        # 🆕 自动提取全局股票池
-        if stock_universe is None and self._raw_data is not None:
-            stock_universe = self._raw_data[self.config.stock_col].unique().tolist()
-            self.logger.info(f"  自动提取全局股票池: {len(stock_universe)} 只")
-        
-        self.logger.info("\n" + "=" * 80)
-        self.logger.info("🔄 创建滚动窗口训练器")
-        self.logger.info("=" * 80)
-        
-        trainer = RollingWindowTrainer(
-            windows=self._rolling_windows,
-            config=self.config,
-            feature_cols=self._feature_cols,
-            logger=self.logger,
-            stock_universe=stock_universe  # 🆕 传递全局股票池
+        raise NotImplementedError(
+            "\n" + "=" * 70 + "\n"
+            "⚠️  DataManager.create_rolling_window_trainer() 已移除！\n\n"
+            "数据层不应包含训练循环。请改用 model.train 模块:\n\n"
+            "    from quantclassic.model.train import RollingDailyTrainer, RollingTrainerConfig\n\n"
+            "    # 1. 创建滚动日批次加载器\n"
+            "    rolling_loaders = dm.create_rolling_daily_loaders()\n\n"
+            "    # 2. 定义模型工厂\n"
+            "    def model_factory():\n"
+            "        return MyModel(d_feat=len(feature_cols))\n\n"
+            "    # 3. 创建训练器并训练\n"
+            "    config = RollingTrainerConfig(n_epochs=20, weight_inheritance=True)\n"
+            "    trainer = RollingDailyTrainer(model_factory, config)\n"
+            "    trainer.fit(rolling_loaders)\n"
+            + "=" * 70
         )
-        
-        return trainer
 
 
 if __name__ == '__main__':

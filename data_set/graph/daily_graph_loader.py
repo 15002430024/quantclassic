@@ -490,14 +490,19 @@ def collate_daily(
         # ----------------------------------------------------------------------
         adj = None
         if graph_builder is not None and n_stocks > 0:
+            # 🆕 动态获取 stock_col，支持 ts_code/order_book_id 兼容
+            stock_col = 'order_book_id'  # 默认值
+            if hasattr(graph_builder, 'config') and hasattr(graph_builder.config, 'stock_col'):
+                stock_col = graph_builder.config.stock_col
+            
             # 检查图构建器类型，选择最优路径
             builder_type = getattr(graph_builder, 'config', None)
             builder_type = getattr(builder_type, 'type', 'corr') if builder_type else 'corr'
             
             if builder_type == 'industry':
                 # 【优化】行业图：只需要 stock_ids，不需要特征
-                # 创建最小化的 DataFrame（只有 stock_col 列）
-                df_day = pd.DataFrame({'order_book_id': stock_ids})
+                # 创建最小化的 DataFrame（使用动态 stock_col）
+                df_day = pd.DataFrame({stock_col: stock_ids})
                 adj, _, _ = graph_builder(df_day)
             else:
                 # 相关性图或混合图：需要特征
@@ -509,7 +514,8 @@ def collate_daily(
                     last_step_features,
                     columns=feature_cols if feature_cols else [f'feature_{i}' for i in range(X.size(2))]
                 )
-                df_day.insert(0, 'order_book_id', stock_ids)
+                # 🆕 使用动态 stock_col 而非硬编码 order_book_id
+                df_day.insert(0, stock_col, stock_ids)
                 
                 adj, _, _ = graph_builder(df_day)
         
@@ -525,6 +531,12 @@ def collate_daily(
         all_stocks = []
         all_dates = []
         
+        # 🆕 获取动态 stock_col（多日批次）
+        stock_col = 'order_book_id'  # 默认值
+        if graph_builder is not None:
+            if hasattr(graph_builder, 'config') and hasattr(graph_builder.config, 'stock_col'):
+                stock_col = graph_builder.config.stock_col
+        
         for item in batch:
             all_X.append(item['features'])
             all_y.append(item['labels'])
@@ -534,8 +546,9 @@ def collate_daily(
             # 为每一天分别构建邻接矩阵
             if graph_builder is not None and item['n_stocks'] > 0:
                 X = item['features']
+                # 🆕 使用动态 stock_col
                 df_day = pd.DataFrame({
-                    'order_book_id': item['stock_ids'],
+                    stock_col: item['stock_ids'],
                     **{f'feature_{i}': X[:, -1, i].numpy() for i in range(X.size(2))}
                 })
                 adj, _, _ = graph_builder(df_day)

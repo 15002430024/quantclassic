@@ -356,11 +356,123 @@ class CombinedLoss(nn.Module):
         return total_loss
 
 
+# ==================== 统一损失函数 (重构新增) ====================
+
+class UnifiedLoss(nn.Module):
+    """
+    🆕 统一损失函数 - 重构后的标准损失接口
+    
+    支持多种基础损失 + 可选的相关性正则化 + 可选的多因子正交化。
+    
+    Loss = BaseLoss(pred, target) 
+         + lambda_corr * CorrelationPenalty(hidden_features)
+         + lambda_ortho * OrthoPenalty(factors)
+    
+    Args:
+        base_loss: 基础损失类型 ('mse' | 'mae' | 'huber' | 'ic' | 'rankic')
+        lambda_corr: 相关性正则化权重，0 表示不使用
+        lambda_ortho: 多因子正交化权重，0 表示不使用
+        reduction: 损失 reduction 模式
+        **kwargs: 传递给基础损失的额外参数（如 Huber 的 delta）
+        
+    Example:
+        >>> criterion = UnifiedLoss(base_loss='mse', lambda_corr=0.01)
+        >>> loss = criterion(pred, target, hidden_features=hidden)
+        
+        >>> # 多因子模式
+        >>> criterion = UnifiedLoss(base_loss='mse', lambda_ortho=0.01)
+        >>> loss = criterion(factor_preds, target, factors=factor_preds)
+    """
+    
+    def __init__(
+        self,
+        base_loss: str = 'mse',
+        lambda_corr: float = 0.0,
+        lambda_ortho: float = 0.0,
+        reduction: str = 'mean',
+        **kwargs
+    ):
+        super().__init__()
+        
+        self.base_loss_name = base_loss.lower()
+        self.lambda_corr = lambda_corr
+        self.lambda_ortho = lambda_ortho
+        self.reduction = reduction
+        
+        # 创建基础损失函数
+        if self.base_loss_name == 'mse':
+            self.base_loss = nn.MSELoss(reduction=reduction)
+        elif self.base_loss_name == 'mae':
+            self.base_loss = nn.L1Loss(reduction=reduction)
+        elif self.base_loss_name == 'huber':
+            delta = kwargs.get('delta', 1.0)
+            self.base_loss = nn.HuberLoss(delta=delta, reduction=reduction)
+        elif self.base_loss_name in ['ic', 'rankic']:
+            self.base_loss = ICLoss()
+        else:
+            raise ValueError(f"不支持的基础损失类型: {base_loss}")
+        
+        # 相关性正则化器
+        if lambda_corr > 0:
+            self.corr_reg = CorrelationRegularizer(lambda_corr=lambda_corr)
+        else:
+            self.corr_reg = None
+        
+        # 多因子正交化正则化器
+        if lambda_ortho > 0:
+            self.ortho_reg = CorrelationRegularizer(lambda_corr=lambda_ortho)
+        else:
+            self.ortho_reg = None
+    
+    def forward(
+        self,
+        preds: torch.Tensor,
+        targets: torch.Tensor,
+        hidden_features: Optional[torch.Tensor] = None,
+        factors: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        计算统一损失
+        
+        Args:
+            preds: [batch_size] 或 [batch_size, num_factors] 预测值
+            targets: [batch_size] 或 [batch_size, num_factors] 目标值
+            hidden_features: [batch_size, hidden_dim] 隐藏特征（用于相关性正则化）
+            factors: [batch_size, num_factors] 多因子输出（用于正交化）
+            
+        Returns:
+            loss: 标量，总损失
+        """
+        # 基础损失
+        loss = self.base_loss(preds.flatten(), targets.flatten())
+        
+        # 相关性正则化
+        if self.corr_reg is not None and hidden_features is not None:
+            loss = loss + self.corr_reg(hidden_features)
+        
+        # 多因子正交化
+        if self.ortho_reg is not None and factors is not None:
+            # 对因子矩阵的转置做相关性惩罚，促使因子间正交
+            # factors: [batch, num_factors] -> 转置后计算因子间相关性
+            if factors.dim() == 2 and factors.size(1) > 1:
+                loss = loss + self.ortho_reg(factors)
+        
+        return loss
+    
+    def extra_repr(self) -> str:
+        return (
+            f"base_loss={self.base_loss_name}, "
+            f"lambda_corr={self.lambda_corr}, "
+            f"lambda_ortho={self.lambda_ortho}"
+        )
+
+
 # ==================== 损失函数工厂 ====================
 
 def get_loss_fn(
     loss_type: str = 'mse',
     lambda_corr: float = 0.0,
+    lambda_ortho: float = 0.0,
     **kwargs
 ) -> nn.Module:
     """
@@ -377,7 +489,9 @@ def get_loss_fn(
             - 'huber_corr': Huber + 相关性正则
             - 'ic_corr': IC + 相关性正则
             - 'combined': 组合损失
-        lambda_corr: 相关性正则化权重（仅对 *_corr 类型有效）
+            - 'unified': 🆕 统一损失（推荐）
+        lambda_corr: 相关性正则化权重（仅对 *_corr 和 unified 类型有效）
+        lambda_ortho: 🆕 多因子正交化权重（仅对 unified 类型有效）
         **kwargs: 额外参数
         
     Returns:
@@ -386,8 +500,21 @@ def get_loss_fn(
     Example:
         >>> criterion = get_loss_fn('mse_corr', lambda_corr=0.01)
         >>> loss = criterion(pred, target, hidden_features)
+        
+        >>> # 使用统一损失（推荐）
+        >>> criterion = get_loss_fn('unified', base_loss='mse', lambda_corr=0.01)
     """
     loss_type = loss_type.lower()
+    
+    # 🆕 统一损失（推荐）
+    if loss_type == 'unified':
+        base_loss = kwargs.pop('base_loss', 'mse')
+        return UnifiedLoss(
+            base_loss=base_loss,
+            lambda_corr=lambda_corr,
+            lambda_ortho=lambda_ortho,
+            **kwargs
+        )
     
     # 标准损失（无正则化）
     if loss_type == 'mse':
@@ -415,7 +542,7 @@ def get_loss_fn(
     
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. "
-                        f"Supported: mse, mae, huber, ic, mse_corr, mae_corr, huber_corr, ic_corr, combined")
+                        f"Supported: mse, mae, huber, ic, mse_corr, mae_corr, huber_corr, ic_corr, combined, unified")
 
 
 if __name__ == '__main__':

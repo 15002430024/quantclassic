@@ -685,6 +685,40 @@ class HybridGraphModel(PyTorchModel):
             self.adj_matrix = self.adj_matrix.to(self.device)
         return self
     
+    def parameters(self):
+        """委托给内部 nn.Module 的 parameters 方法，供外部优化器使用"""
+        return self.model.parameters()
+    
+    def named_parameters(self):
+        """委托给内部 nn.Module 的 named_parameters 方法"""
+        return self.model.named_parameters()
+    
+    def state_dict(self):
+        """委托给内部 nn.Module 的 state_dict 方法"""
+        return self.model.state_dict()
+    
+    def load_state_dict(self, state_dict, strict=True):
+        """委托给内部 nn.Module 的 load_state_dict 方法"""
+        return self.model.load_state_dict(state_dict, strict=strict)
+    
+    def train(self, mode=True):
+        """委托给内部 nn.Module 的 train 方法，设置训练模式"""
+        self.model.train(mode)
+        return self
+    
+    def eval(self):
+        """委托给内部 nn.Module 的 eval 方法，设置评估模式"""
+        self.model.eval()
+        return self
+    
+    def __call__(self, *args, **kwargs):
+        """使封装类可以像 nn.Module 一样被调用"""
+        return self.forward(*args, **kwargs)
+    
+    def forward(self, x, adj=None, funda=None, return_hidden=False):
+        """委托给内部 nn.Module 的 forward 方法"""
+        return self.model(x, adj, funda, return_hidden)
+    
     # ==================== 🆕 Node State Cache Methods ====================
     
     def _update_node_cache(self, stock_idx: torch.Tensor, temporal_features: torch.Tensor):
