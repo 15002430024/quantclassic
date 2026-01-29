@@ -664,6 +664,7 @@ class HybridGraphBuilder(GraphBuilder):
         top_k: 每只股票保留的最相似邻居数量
         industry_col: 行业列名
         industry_adj_path: 预计算的行业邻接矩阵路径（可选，用于加速）
+        stock_industry_mapping: 🆕 全局股票→行业映射字典（可选）
         **kwargs: 传递给 GraphBuilderConfig 的其他参数
     """
     
@@ -674,6 +675,7 @@ class HybridGraphBuilder(GraphBuilder):
         top_k: int = 10,
         industry_col: str = 'industry_name',
         industry_adj_path: Optional[str] = None,
+        stock_industry_mapping: Optional[Dict[str, str]] = None,
         **kwargs
     ):
         config = GraphBuilderConfig(
@@ -701,6 +703,7 @@ class HybridGraphBuilder(GraphBuilder):
             industry_col=industry_col,
             industry_adj_path=industry_adj_path,
             stock_col=config.stock_col,
+            stock_industry_mapping=stock_industry_mapping,  # 🆕 传递全局映射
             add_self_loop=False,
             normalize=False
         )

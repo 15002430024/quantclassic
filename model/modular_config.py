@@ -48,8 +48,6 @@ try:
 except ImportError:
     # 直接运行脚本时的后备导入
     from model.model_config import BaseModelConfig
-            verbose: bool = True
-            seed: Optional[int] = None
 
 
 # ==================== 模块类型枚举 ====================

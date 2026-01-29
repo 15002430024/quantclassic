@@ -20,6 +20,8 @@ model/
 ├── model_config.py         # ⚠️ 旧配置（已废弃，请用 modular_config.py）
 ├── modular_config.py       # 🆕 模块化配置系统 (CompositeModelConfig)
 ├── loss.py                 # 损失函数 (UnifiedLoss, ICLoss, CorrelationRegularizer)
+├── predict.py              # 🆕 预测助手 (predict_with_metadata, compute_ic)
+├── predict.md              # 🆕 预测助手需求文档
 ├── train/                  # 🆕 统一训练引擎
 │   ├── base_trainer.py     #   训练基类 + TrainerConfig
 │   ├── simple_trainer.py   #   简单训练器（单窗口）
@@ -599,6 +601,97 @@ new_config = to_composite_config(old_config)
 | 滚动训练优化器状态保存 | ✅ | `reset_optimizer=False` 生效 |
 | 损失函数白名单扩展 | ✅ | 支持 `mae_corr`, `unified` 等 |
 | DailyRollingConfig 导出 | ✅ | `from model.train import DailyRollingConfig` |
+| 🆕 预测助手 | ✅ | `predict_with_metadata` 支持元数据重建 DataFrame |
+
+
+## 📊 预测助手 (2026-01-16 新增)
+
+### 功能概述
+
+`predict_with_metadata` 提供统一的带元数据预测接口，支持：
+
+- 从任意 DataLoader 进行推理
+- 重建含 `trade_date`、`order_book_id`、多因子列的 DataFrame
+- 兼容静态 DataLoader 与 `DailyGraphDataLoader`
+- 支持有/无邻接矩阵的模型
+- 支持单因子与多因子输出
+
+### 基本用法
+
+```python
+from quantclassic.model import predict_with_metadata, compute_ic, compute_ic_stats
+
+# 从 trainer 或 model 进行预测
+pred_df, label_df = predict_with_metadata(
+    trainer,           # SimpleTrainer 或 nn.Module
+    test_loader,       # DataLoader
+    device='cuda',
+    reduce_factor='mean',  # 多因子聚合方式
+    return_label=True
+)
+
+# 计算每日 IC
+daily_ic = compute_ic(pred_df, label_df)
+print(f"IC 均值: {daily_ic.mean():.4f}")
+
+# 计算 IC 统计量
+ic_stats = compute_ic_stats(daily_ic)
+print(f"ICIR: {ic_stats['icir']:.4f}")
+print(f"IC 正比例: {ic_stats['ic_positive_ratio']:.2%}")
+```
+
+### 支持的 DataLoader 格式
+
+| 格式 | 说明 |
+|------|------|
+| `(x, y)` | 基础格式，无元数据 |
+| `(x, y, adj)` | 带邻接矩阵 |
+| `(x, y, adj, stock_ids)` | 带股票标识 |
+| `(x, y, adj, stock_ids, date)` | 完整元数据（推荐） |
+| `dict` | 字典格式，自动解析 |
+
+### API 参数
+
+```python
+def predict_with_metadata(
+    model_or_trainer,       # nn.Module 或 SimpleTrainer
+    loader,                 # DataLoader
+    device=None,            # 计算设备
+    *,
+    parse_batch_fn=None,    # 自定义批次解析函数
+    reduce_factor='mean',   # None/'mean'/callable
+    return_label=True,      # 是否返回标签 DataFrame
+    return_tensor=False,    # 返回张量而非 DataFrame
+) -> Tuple[pd.DataFrame, pd.DataFrame]
+```
+
+### 输出格式
+
+**pred_df 列**:
+- `trade_date`: 交易日期
+- `order_book_id`: 股票代码
+- `pred`: 预测值（聚合后）
+- `pred_factor_0`, `pred_factor_1`, ...: 多因子列（当 `reduce_factor='mean'` 且因子数>1）
+
+**label_df 列**:
+- `trade_date`: 交易日期
+- `order_book_id`: 股票代码
+- `label`: 真实标签
+
+### 与现有代码的关系
+
+```
+predict.py (新增)
+    │
+    ├── 被 train/simple_trainer.py 可选调用
+    │       └── SimpleTrainer.predict_with_metadata() 可封装此函数
+    │
+    ├── 依赖 base_model.py 的批次解析约定
+    │       └── _parse_batch_data 兼容逻辑
+    │
+    └── 支持 hybrid_graph_models.py / pytorch_models.py
+            └── forward(x, adj=...) 接口
+```
 
 
 ## 📖 参考
@@ -608,6 +701,16 @@ new_config = to_composite_config(old_config)
 - **VAE**: Kingma & Welling (2013) "Auto-Encoding Variational Bayes"
 
 ## 📝 更新日志
+
+- **v2.1.0** (2026-01-16)
+  - 🆕 新增 `predict.py` 预测助手模块
+  - 🆕 `predict_with_metadata`: 带元数据的统一预测接口
+  - 🆕 `compute_ic` / `compute_ic_stats`: IC 计算工具
+  - 🆕 新增 `predict.md` 需求文档
+
+- **v2.0.1** (2026-01-16)
+  - ✅ 修复 `modular_config.py` 缩进残留导致 ImportError 的问题
+  - ✅ 移除孤立字段定义 `verbose: bool = True` 和 `seed: Optional[int] = None`
 
 - **v2.0.0** (2026-01-11)
   - 🆕 统一训练引擎 `model/train/`，`fit()` 代理到 `SimpleTrainer`

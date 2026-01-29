@@ -1,0 +1,11 @@
+enabled: true
+name: null
+rnn_type: lstm
+hidden_size: 32
+num_layers: 2
+bidirectional: false
+use_attention: true
+attention_type: self
+attention_heads: 4
+dropout: 0.2
+use_residual: true

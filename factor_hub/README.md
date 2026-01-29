@@ -1,5 +1,14 @@
 # FactorHub - 量化因子计算框架
 
+> ⚠️ **实验性模块，不用于生产** ⚠️
+>
+> 本模块用于因子计算原型验证，不建议直接用于生产环境。
+> **生产级因子生成/处理/回测请使用 [`quantclassic.backtest`](../backtest/README.md)**：
+> - `MultiFactorBacktest`（推荐，多因子）
+> - `FactorBacktestSystem`（端到端模型推理）
+>
+> 迁移路径：`FactorEngine` → `backtest.FactorGenerator` + `backtest.FactorProcessor`
+
 <div align="center">
 
 **从数据到因子的端到端解决方案**

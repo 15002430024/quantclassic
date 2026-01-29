@@ -1,0 +1,58 @@
+pipeline_steps:
+- name: 生成多周期标签
+  method: generate_labels
+  features: null
+  enabled: true
+  params: {}
+- name: 标签SimStock中性化
+  method: simstock_label_neutralize
+  features: null
+  enabled: true
+  params: {}
+- name: 全局缺失值填充
+  method: fillna_median
+  features: null
+  enabled: true
+  params: {}
+column_mapping:
+  stock_col: order_book_id
+  time_col: trade_date
+groupby_columns:
+- trade_date
+id_columns:
+- order_book_id
+- ts_code
+- stock_code
+- symbol
+- trade_date
+- date
+- datetime
+label_config:
+  enabled: true
+  stock_col: order_book_id
+  time_col: trade_date
+  price_col: close
+  base_price_col: close
+  label_type: return
+  return_periods:
+  - 1
+  - 5
+  - 10
+  return_method: simple
+  label_prefix: y_ret
+  neutralize: false
+neutralize_config:
+  industry_column: industry_name
+  market_cap_column: total_mv
+  min_samples: 10
+  label_column: y_ret_10d
+  similarity_threshold: 0.7
+  lookback_window: 252
+  min_similar_stocks: 5
+  recalc_interval: 20
+  correlation_method: pearson
+  output_column: alpha_label
+save_intermediate: false
+intermediate_dir: intermediate_results
+validate_each_step: true
+verbose: true

@@ -140,13 +140,18 @@ class MSEWithCorrelationLoss(nn.Module):
         计算带正则项的损失
         
         Args:
-            preds: [batch_size] 或 [batch_size, 1] 预测值
+            preds: [batch_size] 或 [batch_size, 1] 或 [batch_size, F] 预测值
+                   🆕 支持多因子输出，会对 F 维度取均值聚合
             targets: [batch_size] 或 [batch_size, 1] 目标值
             hidden_features: [batch_size, hidden_dim] 隐藏层特征（可选）
             
         Returns:
             loss: 标量，总损失
         """
+        # 🆕 多因子预测聚合：如果 preds 是 [batch, F]，取均值得到 [batch]
+        if preds.dim() == 2 and preds.size(1) > 1:
+            preds = preds.mean(dim=1)
+        
         # 基础 MSE 损失
         base_loss = self.mse(preds.flatten(), targets.flatten())
         
@@ -178,6 +183,10 @@ class MAEWithCorrelationLoss(nn.Module):
         targets: torch.Tensor, 
         hidden_features: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
+        # 🆕 多因子预测聚合：如果 preds 是 [batch, F]，取均值得到 [batch]
+        if preds.dim() == 2 and preds.size(1) > 1:
+            preds = preds.mean(dim=1)
+        
         base_loss = self.mae(preds.flatten(), targets.flatten())
         corr_penalty = self.corr_reg(hidden_features)
         return base_loss + corr_penalty
@@ -206,6 +215,10 @@ class HuberWithCorrelationLoss(nn.Module):
         targets: torch.Tensor, 
         hidden_features: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
+        # 🆕 多因子预测聚合：如果 preds 是 [batch, F]，取均值得到 [batch]
+        if preds.dim() == 2 and preds.size(1) > 1:
+            preds = preds.mean(dim=1)
+        
         base_loss = self.huber(preds.flatten(), targets.flatten())
         corr_penalty = self.corr_reg(hidden_features)
         return base_loss + corr_penalty
@@ -243,13 +256,17 @@ class ICLoss(nn.Module):
         计算 IC Loss
         
         Args:
-            preds: [batch_size] 预测值
+            preds: [batch_size] 或 [batch_size, F] 预测值
             targets: [batch_size] 目标值
             hidden_features: 未使用，保持接口一致
             
         Returns:
             loss: 1 - IC
         """
+        # 🆕 多因子预测聚合：如果 preds 是 [batch, F]，取均值得到 [batch]
+        if preds.dim() == 2 and preds.size(1) > 1:
+            preds = preds.mean(dim=1)
+        
         preds = preds.flatten()
         targets = targets.flatten()
         

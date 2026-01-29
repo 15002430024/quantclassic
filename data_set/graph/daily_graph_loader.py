@@ -51,9 +51,14 @@ from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 
+try:
+    from ...config.base_config import BaseConfig
+except ImportError:
+    from config.base_config import BaseConfig
+
 
 @dataclass
-class DailyLoaderConfig:
+class DailyLoaderConfig(BaseConfig):
     """日批次加载器配置"""
     # 基础配置
     window_size: int = 20
@@ -615,8 +620,13 @@ class DailyGraphDataLoader:
         )
     
     def __iter__(self):
-        """迭代器"""
-        return iter(self._loader)
+        """迭代器（过滤空批次）"""
+        for batch in self._loader:
+            X, y, adj, stock_ids, date = batch
+            # 🆕 跳过空批次（n_stocks=0 会导致 GAT 层 N=0 reshape 异常）
+            if X.size(0) == 0:
+                continue
+            yield batch
     
     def __len__(self):
         """返回天数"""
@@ -823,7 +833,14 @@ if __name__ == '__main__':
     # 测试 5: 配合 GraphBuilder
     print("\n【测试 5: 配合 GraphBuilder】")
     import sys
-    sys.path.insert(0, '/home/u2025210237/jupyterlab')
+    try:
+        import quantclassic
+    except ImportError:
+         # 尝试动态添加项目根目录
+        project_root = str(Path(__file__).resolve().parents[3])
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+            
     from quantclassic.data_processor.graph_builder import CorrGraphBuilder
     
     graph_builder = CorrGraphBuilder(method='cosine', top_k=2)

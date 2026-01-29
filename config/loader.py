@@ -260,24 +260,7 @@ if __name__ == "__main__":
     loaded_dict = ConfigLoader.load(test_file, return_dict=True)
     print(f"✅ 加载为字典成功: {type(loaded_dict)}")
     
-    # 测试2: 使用面向对象配置
-    from model.model_config import VAEConfig
-    
-    vae_config = VAEConfig(
-        hidden_dim=128,
-        latent_dim=16,
-        n_epochs=100,
-    )
-    
-    vae_file = 'output/test_vae_config.yaml'
-    ConfigLoader.save(vae_config, vae_file)
-    print(f"✅ 保存 VAE 配置到: {vae_file}")
-    
-    # 加载 VAE 配置
-    loaded_vae = ConfigLoader.load(vae_file, VAEConfig)
-    print(f"✅ 加载 VAE 配置成功: latent_dim={loaded_vae.latent_dim}")
-    
-    # 测试3: 环境变量替换
+    # 测试2: 环境变量替换
     config_with_env = {
         'path': '${HOME}/data',
         'user': '${USER:default_user}'

@@ -1,0 +1,72 @@
+base_dir: output
+cache_dir: cache/data_manager
+output_dir: output
+data_file: wind_processed_all.parquet
+data_format: parquet
+window_size: 150
+label_col: alpha_label
+stock_col: order_book_id
+time_col: trade_date
+exclude_cols:
+- y_ret_1d
+- y_ret_5d
+- y_ret_10d
+feature_cols:
+- open
+- high
+- low
+- close
+- vol
+- amount
+- vwap
+standardize_method: zscore
+fill_na_method: forward
+winsorize_limits:
+- 0.01
+- 0.01
+split_strategy: rolling
+train_ratio: 0.7
+val_ratio: 0.2
+test_ratio: 0.1
+train_end_date: null
+val_end_date: null
+rolling_window_size: 2268
+rolling_step: 252
+batch_size: 1000
+num_workers: 4
+pin_memory: false
+shuffle_train: true
+use_dtype_optimization: true
+chunk_size: null
+enable_cache: true
+cache_feature_engineering: true
+cache_split_data: true
+cache_expire_hours: 24
+enable_validation: true
+max_na_ratio: 0.3
+min_samples_per_stock: 60
+detect_outliers: true
+outlier_std_threshold: 5.0
+enable_window_transform: true
+window_price_log: true
+price_cols:
+- open
+- high
+- low
+- close
+- vwap
+close_col: close
+window_volume_norm: true
+volume_cols:
+- vol
+- amount
+label_rank_normalize: true
+label_rank_output_range:
+- -1
+- 1
+use_daily_batch: false
+graph_builder_config: null
+shuffle_dates: true
+verbose: true
+log_level: INFO
+save_data_report: true

@@ -53,13 +53,15 @@ class FactorBacktestSystem:
         # 清除已有的处理器
         self.logger.handlers = []
         
+        # 统一定义 formatter，避免分支变量缺失
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        
         # 控制台处理器
         if self.config.console_log:
             console_handler = logging.StreamHandler()
             console_handler.setLevel(getattr(logging, self.config.log_level))
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            )
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
         
@@ -96,16 +98,18 @@ class FactorBacktestSystem:
     def run_backtest(self,
                     data_df: pd.DataFrame,
                     model: Optional[torch.nn.Module] = None,
-                    factor_col: str = 'factor_raw_std',
-                    return_col: str = 'y_true') -> Dict[str, Any]:
+                    factor_col: Optional[str] = None,
+                    return_col: str = 'y_true',
+                    factor_cols: Optional[list] = None) -> Dict[str, Any]:
         """
         运行完整回测流程
         
         Args:
             data_df: 原始数据DataFrame
             model: 训练好的模型（None时使用已加载的模型）
-            factor_col: 使用的因子列名
+            factor_col: 使用的因子列名（用于 IC/组合构建），None 时自动推断第一个 *_std 列
             return_col: 收益列名
+            factor_cols: 需要处理的因子列名列表（透传给 FactorProcessor，None 时自动检测）
             
         Returns:
             回测结果字典
@@ -132,7 +136,7 @@ class FactorBacktestSystem:
         
         # 2. 处理因子
         self.logger.info("\n步骤2: 处理因子")
-        processed_df = self.factor_processor.process(factor_df)
+        processed_df = self.factor_processor.process(factor_df, factor_cols=factor_cols)
         
         # 添加收益列（如果原始数据中有）
         if return_col in data_df.columns:
@@ -140,6 +144,11 @@ class FactorBacktestSystem:
             processed_df = self._merge_returns(processed_df, data_df, return_col)
         
         results['processed_factors'] = processed_df
+        
+        # 自动推断因子列（如果未指定）
+        if factor_col is None:
+            factor_col = self._infer_factor_col(processed_df)
+            self.logger.info(f"自动推断因子列: {factor_col}")
         
         # 3. IC分析
         self.logger.info("\n步骤3: IC分析")
@@ -236,6 +245,51 @@ class FactorBacktestSystem:
         self.logger.info(f"  卡玛比率: {metrics['calmar_ratio']:.4f}")
         self.logger.info(f"  胜率: {metrics['win_rate']:.2%}")
     
+    def _infer_factor_col(self, df: pd.DataFrame) -> str:
+        """
+        从处理后的 DataFrame 自动推断因子列名
+        
+        优先级：*_std > *_neutral > pred_* > latent_* > factor_*
+        
+        Args:
+            df: 处理后的 DataFrame
+            
+        Returns:
+            推断出的因子列名
+            
+        Raises:
+            ValueError: 未找到合适的因子列
+        """
+        # 优先找 _std 后缀（标准化后的因子）
+        std_cols = [c for c in df.columns if c.endswith('_std')]
+        if std_cols:
+            return std_cols[0]
+        
+        # 其次找 _neutral 后缀（中性化后的因子）
+        neutral_cols = [c for c in df.columns if c.endswith('_neutral')]
+        if neutral_cols:
+            return neutral_cols[0]
+        
+        # 再找 pred_* 前缀
+        pred_cols = [c for c in df.columns if c.startswith('pred_')]
+        if pred_cols:
+            return pred_cols[0]
+        
+        # 再找 latent_* 前缀
+        latent_cols = [c for c in df.columns if c.startswith('latent_')]
+        if latent_cols:
+            return latent_cols[0]
+        
+        # 最后找 factor_* 前缀
+        factor_cols = [c for c in df.columns if c.startswith('factor_')]
+        if factor_cols:
+            return factor_cols[0]
+        
+        raise ValueError(
+            "未找到合适的因子列，请显式指定 factor_col 参数。"
+            f"可用列: {list(df.columns)}"
+        )
+    
     def _save_results(self, results: Dict[str, Any]):
         """保存回测结果"""
         os.makedirs(self.config.output_dir, exist_ok=True)
@@ -282,18 +336,38 @@ class FactorBacktestSystem:
         Returns:
             回测结果
         """
-        # 临时修改配置
+        # 保存原始配置与组件
         original_config = self.config
-        from .backtest_config import ConfigTemplates
-        self.config = ConfigTemplates.fast_test()
+        original_components = {
+            'factor_generator': self.factor_generator,
+            'factor_processor': self.factor_processor,
+            'portfolio_builder': self.portfolio_builder,
+            'ic_analyzer': self.ic_analyzer,
+            'performance_evaluator': self.performance_evaluator,
+            'visualizer': self.visualizer,
+        }
         
-        # 重新初始化组件
-        self.__init__(self.config)
-        
-        # 运行回测
-        results = self.run_backtest(data_df, model)
-        
-        # 恢复配置
-        self.config = original_config
-        
-        return results
+        try:
+            # 临时使用快速测试配置
+            from .backtest_config import ConfigTemplates
+            self.config = ConfigTemplates.fast_test()
+            
+            # 重新初始化组件（使用临时配置）
+            self.factor_processor = FactorProcessor(self.config)
+            self.portfolio_builder = PortfolioBuilder(self.config)
+            self.ic_analyzer = ICAnalyzer(self.config)
+            self.performance_evaluator = PerformanceEvaluator(self.config)
+            self.visualizer = ResultVisualizer(self.config)
+            
+            # 运行回测
+            results = self.run_backtest(data_df, model)
+            return results
+        finally:
+            # 恢复原始配置与组件
+            self.config = original_config
+            self.factor_generator = original_components['factor_generator']
+            self.factor_processor = original_components['factor_processor']
+            self.portfolio_builder = original_components['portfolio_builder']
+            self.ic_analyzer = original_components['ic_analyzer']
+            self.performance_evaluator = original_components['performance_evaluator']
+            self.visualizer = original_components['visualizer']

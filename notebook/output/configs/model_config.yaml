@@ -1,0 +1,63 @@
+device: cuda
+n_epochs: 20
+batch_size: 1000
+learning_rate: 0.001
+early_stop: 6
+optimizer: adam
+loss_fn: mse
+weight_decay: 0.0
+model_save_path: output/best_model.pth
+log_dir: logs
+verbose: true
+seed: null
+temporal:
+  enabled: true
+  name: null
+  rnn_type: lstm
+  hidden_size: 32
+  num_layers: 2
+  bidirectional: false
+  use_attention: true
+  attention_type: self
+  attention_heads: 4
+  dropout: 0.2
+  use_residual: true
+graph:
+  enabled: true
+  name: null
+  gat_type: standard
+  hidden_dim: 32
+  heads: 4
+  concat: true
+  top_k_neighbors: 10
+  edge_threshold: 0.0
+  use_edge_features: false
+  dropout: 0.2
+  use_residual: true
+fusion:
+  enabled: true
+  name: null
+  hidden_sizes:
+  - 128
+  - 64
+  activation: relu
+  use_batch_norm: false
+  use_residual: false
+  dropout: 0.2
+  output_dim: 64
+d_feat: 7
+funda_dim: null
+adj_matrix_path: null
+feature_fusion_strategy: concat
+graph_inference_mode: batch
+max_neighbors: 10
+cache_size: 5000
+stock_idx_position: 2
+funda_position: null
+use_scheduler: true
+scheduler_type: plateau
+scheduler_patience: 2
+scheduler_factor: 0.5
+scheduler_min_lr: 1.0e-06
+use_residual: true
+lambda_corr: 0.01

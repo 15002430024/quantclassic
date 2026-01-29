@@ -823,7 +823,8 @@ class HybridGraphModel(PyTorchModel):
         stock_idx: Optional[torch.Tensor],
         batch_funda: Optional[torch.Tensor],
         mode: Optional[str] = None,
-        update_cache: bool = True
+        update_cache: bool = True,
+        batch_adj: Optional[torch.Tensor] = None  # 🆕 支持动态图 loader 的 batch adj
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         统一的前向传播步骤
@@ -837,11 +838,15 @@ class HybridGraphModel(PyTorchModel):
             batch_funda: [batch_size, funda_dim] 基本面数据（可选）
             mode: 图推理模式，None 时使用默认配置
             update_cache: 是否更新节点缓存
+            batch_adj: 🆕 [batch_size, batch_size] 动态邻接矩阵（可选，来自 DailyGraphDataLoader）
             
         Returns:
             (pred, time_feat)
             - pred: [batch_size] 预测结果
             - time_feat: [batch_size, hidden] 时序特征（用于缓存）
+            
+        Note:
+            🆕 当同时提供 batch_adj 和静态 adj_matrix 时，优先使用 batch_adj（动态图优先）。
         """
         mode = mode or self.graph_inference_mode
         batch_size = batch_x.size(0)
@@ -855,9 +860,18 @@ class HybridGraphModel(PyTorchModel):
         
         # Step 3: 准备图上下文并运行 GAT
         if self.use_graph:
-            augmented_x, augmented_adj, original_batch_size = self._prepare_graph_context(
-                time_feat, stock_idx, mode
-            )
+            # 🆕 优先使用 batch_adj（动态图模式）
+            if batch_adj is not None:
+                # 动态图模式：直接使用 batch 内的邻接矩阵
+                augmented_x = time_feat
+                augmented_adj = batch_adj.to(self.device)
+                original_batch_size = batch_size
+                self.logger.debug(f"使用动态 batch_adj: {augmented_adj.shape}")
+            else:
+                # 静态图模式或无图模式
+                augmented_x, augmented_adj, original_batch_size = self._prepare_graph_context(
+                    time_feat, stock_idx, mode
+                )
             
             # 🆕 处理基本面数据维度问题：对外部邻居填充零
             if batch_funda is not None:
@@ -1072,14 +1086,15 @@ class HybridGraphModel(PyTorchModel):
         Note:
             🆕 现在使用 _forward_step 统一前向传播，确保训练和推理
             使用相同的计算图（包括邻居采样逻辑），避免分布偏移。
+            🆕 支持动态图 loader 的 batch_adj。
         """
         self.model.train()
         total_loss = 0
         n_batches = 0
         
         for batch_data in tqdm(train_loader, desc="训练", leave=False):
-            # 解析 batch 数据
-            batch_x, stock_idx, batch_funda = self._parse_batch_data(batch_data)
+            # 解析 batch 数据（🆕 现在返回 4 元组，包含 batch_adj）
+            batch_x, stock_idx, batch_funda, batch_adj = self._parse_batch_data(batch_data)
             batch_y = batch_data[1]
             
             batch_x = batch_x.to(self.device)
@@ -1092,7 +1107,8 @@ class HybridGraphModel(PyTorchModel):
             pred, _, hidden_features = self._forward_step(
                 batch_x, stock_idx, batch_funda,
                 mode=self.graph_inference_mode,
-                update_cache=True  # 训练时更新缓存
+                update_cache=True,  # 训练时更新缓存
+                batch_adj=batch_adj  # 🆕 传递动态邻接矩阵
             )
             
             # 🆕 多因子输出支持：标签广播策略
@@ -1139,8 +1155,8 @@ class HybridGraphModel(PyTorchModel):
         
         with torch.no_grad():
             for batch_data in valid_loader:
-                # 解析 batch 数据
-                batch_x, stock_idx, batch_funda = self._parse_batch_data(batch_data)
+                # 解析 batch 数据（🆕 现在返回 4 元组，包含 batch_adj）
+                batch_x, stock_idx, batch_funda, batch_adj = self._parse_batch_data(batch_data)
                 batch_y = batch_data[1]
                 
                 batch_x = batch_x.to(self.device)
@@ -1148,11 +1164,12 @@ class HybridGraphModel(PyTorchModel):
                 if batch_funda is not None:
                     batch_funda = batch_funda.to(self.device)
                 
-                # 🆕 使用统一的前向传播
+                # 🆕 使用统一的前向传播（传递 batch_adj）
                 pred, _, hidden_features = self._forward_step(
                     batch_x, stock_idx, batch_funda,
                     mode=self.graph_inference_mode,
-                    update_cache=True  # 验证时也更新缓存，为推理预热
+                    update_cache=True,  # 验证时也更新缓存，为推理预热
+                    batch_adj=batch_adj  # 🆕 传递动态邻接矩阵
                 )
                 
                 # 🆕 多因子输出支持：标签广播策略
@@ -1283,17 +1300,18 @@ class HybridGraphModel(PyTorchModel):
         
         with torch.no_grad():
             for batch_data in test_loader:
-                # 解析 batch 数据
-                batch_x, stock_idx, batch_funda = self._parse_batch_data(batch_data)
+                # 解析 batch 数据（🆕 现在返回 4 元组，包含 batch_adj）
+                batch_x, stock_idx, batch_funda, batch_adj = self._parse_batch_data(batch_data)
                 batch_x = batch_x.to(self.device)
                 if batch_funda is not None:
                     batch_funda = batch_funda.to(self.device)
                 
-                # 🆕 使用统一的前向传播
+                # 🆕 使用统一的前向传播（传递 batch_adj）
                 pred, _, _ = self._forward_step(
                     batch_x, stock_idx, batch_funda,
                     mode=mode,
-                    update_cache=True  # 预测时也更新缓存，支持流式推理
+                    update_cache=True,  # 预测时也更新缓存，支持流式推理
+                    batch_adj=batch_adj  # 🆕 传递动态邻接矩阵
                 )
                 
                 predictions.append(pred.cpu())
@@ -1321,7 +1339,7 @@ class HybridGraphModel(PyTorchModel):
                 return predictions.numpy().flatten()
             return predictions
     
-    def _parse_batch_data(self, batch_data) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    def _parse_batch_data(self, batch_data) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         解析 batch 数据
         
@@ -1329,7 +1347,7 @@ class HybridGraphModel(PyTorchModel):
             batch_data: DataLoader 返回的 batch（元组或字典）
             
         Returns:
-            (batch_x, stock_idx, batch_funda)
+            (batch_x, stock_idx, batch_funda, batch_adj)
             
         Batch 格式支持:
             1. 元组格式（推荐使用 stock_idx_position 明确指定）:
@@ -1338,12 +1356,16 @@ class HybridGraphModel(PyTorchModel):
                - (x, y, date_idx, stock_idx): stock_idx_position=3
                - (x, y, stock_idx, funda): stock_idx_position=2, funda_position=3
                
-            2. 字典格式（自动识别 key）:
-               - batch['x'], batch['stock_idx'], batch['funda']
+            2. 🆕 动态图 DailyGraphDataLoader 格式（5元素元组）:
+               - (X, y, adj, stock_ids, date): 自动识别，batch_adj 来自 batch[2]
+               
+            3. 字典格式（自动识别 key）:
+               - batch['x'], batch['stock_idx'], batch['funda'], batch['adj']
                
         Note:
             🆕 不再使用数值范围启发式猜测，而是通过明确的位置参数
             或字典 key 来识别股票索引，避免 date_idx 被误认为 stock_idx。
+            🆕 支持动态图 loader 的 5 元素格式，自动提取 batch adj。
         """
         # ========== 字典格式 ==========
         if isinstance(batch_data, dict):
@@ -1366,7 +1388,14 @@ class HybridGraphModel(PyTorchModel):
                 batch_data.get('static_features')
             )
             
-            return batch_x, stock_idx, batch_funda
+            # 🆕 查找邻接矩阵
+            batch_adj = (
+                batch_data.get('adj') or
+                batch_data.get('adj_matrix') or
+                batch_data.get('adjacency')
+            )
+            
+            return batch_x, stock_idx, batch_funda, batch_adj
         
         # ========== 元组格式 ==========
         if not isinstance(batch_data, (tuple, list)):
@@ -1378,6 +1407,29 @@ class HybridGraphModel(PyTorchModel):
         batch_x = batch_data[0]
         batch_funda = None
         stock_idx = None
+        batch_adj = None
+        
+        # 🆕 方式 0: 检测动态图 DailyGraphDataLoader 的 5 元素格式
+        # 格式: (X, y, adj, stock_ids, date)
+        # 特征: len=5, batch[2] 是 2D 浮点张量（邻接矩阵）, batch[3] 是列表（股票ID）
+        if len(batch_data) == 5:
+            candidate_adj = batch_data[2]
+            candidate_stock_ids = batch_data[3]
+            # 检测: adj 是 2D 浮点张量，stock_ids 是列表
+            is_daily_graph_format = (
+                torch.is_tensor(candidate_adj) and 
+                candidate_adj.dim() == 2 and 
+                candidate_adj.dtype in [torch.float, torch.float32, torch.float64] and
+                isinstance(candidate_stock_ids, list)
+            )
+            if is_daily_graph_format:
+                batch_adj = candidate_adj
+                # 动态图模式下 stock_ids 是字符串列表，不是索引张量
+                # stock_idx 保持为 None，使用 batch_adj 进行图推理
+                self.logger.debug(
+                    f"检测到动态图 DailyGraphDataLoader 格式: (X, y, adj[{candidate_adj.shape}], stock_ids[{len(candidate_stock_ids)}], date)"
+                )
+                return batch_x, stock_idx, batch_funda, batch_adj
         
         # 方式 1: 用户明确指定了位置
         if self.stock_idx_position is not None:
@@ -1385,6 +1437,15 @@ class HybridGraphModel(PyTorchModel):
                 candidate = batch_data[self.stock_idx_position]
                 if torch.is_tensor(candidate) and candidate.dtype == torch.long:
                     stock_idx = self._validate_stock_idx_range(candidate)
+                elif torch.is_tensor(candidate) and candidate.dim() == 2:
+                    # 🆕 可能是邻接矩阵被误配置为 stock_idx_position
+                    # 检测并自动修正
+                    if candidate.dtype in [torch.float, torch.float32, torch.float64]:
+                        self.logger.warning(
+                            f"batch[{self.stock_idx_position}] 是 2D 浮点张量，可能是邻接矩阵而非 stock_idx。"
+                            f"将其作为 batch_adj 使用。建议检查 stock_idx_position 配置。"
+                        )
+                        batch_adj = candidate
                 else:
                     self.logger.warning(
                         f"batch[{self.stock_idx_position}] 不是 long 类型张量，跳过"
@@ -1394,7 +1455,15 @@ class HybridGraphModel(PyTorchModel):
             if self.funda_position < len(batch_data):
                 candidate = batch_data[self.funda_position]
                 if torch.is_tensor(candidate) and candidate.dtype in [torch.float, torch.float32, torch.float64]:
-                    batch_funda = candidate
+                    # 避免与 batch_adj 混淆（batch_adj 是 2D，funda 通常也是 2D 但语义不同）
+                    if candidate.dim() == 2 and batch_adj is None:
+                        # 如果还没有 batch_adj，且是方阵，可能是 adj
+                        if candidate.size(0) == candidate.size(1) and candidate.size(0) == batch_x.size(0):
+                            batch_adj = candidate
+                        else:
+                            batch_funda = candidate
+                    elif candidate.dim() != 2 or candidate.size(0) != candidate.size(1):
+                        batch_funda = candidate
         
         # 方式 2: 用户未指定，使用保守的默认规则
         # 只有当 stock_idx_position 未设置时才尝试自动推断
@@ -1410,7 +1479,7 @@ class HybridGraphModel(PyTorchModel):
                             f"自动检测到 stock_idx 在 batch[3]，建议显式设置 stock_idx_position=3"
                         )
         
-        return batch_x, stock_idx, batch_funda
+        return batch_x, stock_idx, batch_funda, batch_adj
     
     def _validate_stock_idx_range(self, idx_tensor: torch.Tensor) -> Optional[torch.Tensor]:
         """

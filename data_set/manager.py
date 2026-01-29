@@ -715,6 +715,202 @@ class DataManager:
         
         return RollingDailyLoaderCollection(window_loaders)
     
+    def create_rolling_daily_loaders_from_test(
+        self,
+        graph_builder=None,
+        graph_builder_config: Optional[Dict] = None,
+        rolling_window_size: Optional[int] = None,
+        rolling_step: Optional[int] = None,
+        val_ratio: float = 0.15,
+        device: str = 'cuda',
+    ):
+        """
+        从已有的 train/val/test 划分创建滚动窗口日批次加载器
+        
+        与 create_rolling_daily_loaders 的区别：
+        - create_rolling_daily_loaders: 要求 split_strategy='rolling'，从 _rolling_windows 获取窗口
+        - create_rolling_daily_loaders_from_test: 支持任意 split_strategy，在测试集上滚动生成窗口
+        
+        滚动逻辑：
+        - 合并 train/val/test 为完整数据集
+        - 从 test_start_date 开始，每隔 rolling_step 生成一个测试窗口
+        - 每个窗口的训练集取测试期前 rolling_window_size 天，并按 val_ratio 划分验证集
+        
+        Args:
+            graph_builder: 图构建器实例（直接传入），优先于 graph_builder_config
+            graph_builder_config: 图构建器配置 dict
+            rolling_window_size: 滚动窗口训练集大小（天），默认 config.rolling_window_size
+            rolling_step: 滚动步长（天），默认 config.rolling_step
+            val_ratio: 从训练集中划分验证集的比例
+            device: 计算设备
+            
+        Returns:
+            RollingDailyLoaderCollection 对象，可直接传给 RollingDailyTrainer
+            
+        Example:
+            >>> dm.run_full_pipeline()  # split_strategy='time' 或 'ratio'
+            >>> loaders = dm.create_rolling_daily_loaders_from_test(
+            ...     graph_builder=my_graph_builder,
+            ...     rolling_window_size=120,
+            ...     rolling_step=20,
+            ... )
+            >>> results = rolling_trainer.train(loaders, save_dir='...')
+        """
+        if self._train_df is None or self._feature_cols is None:
+            raise ValueError("未准备数据，请先调用 run_full_pipeline()")
+        
+        from quantclassic.data_set.graph import DailyBatchDataset, DailyGraphDataLoader
+        from quantclassic.data_processor.graph_builder import GraphBuilderFactory
+        from collections import namedtuple
+        from dataclasses import dataclass
+        
+        # 参数默认值
+        rolling_window_size = rolling_window_size or getattr(self.config, 'rolling_window_size', 120)
+        rolling_step = rolling_step or getattr(self.config, 'rolling_step', 20)
+        test_size = rolling_step  # 测试期长度 = 滚动步长
+        
+        # 创建图构建器
+        if graph_builder is None and graph_builder_config is not None:
+            gb_dict = _normalize_graph_builder_config(
+                graph_builder_config, self._raw_data, self.config.stock_col, self.logger
+            )
+            gb_dict.setdefault('stock_col', self.config.stock_col)
+            graph_builder = GraphBuilderFactory.create(gb_dict)
+        
+        # 合并数据
+        df_full = pd.concat([self._train_df, self._val_df, self._test_df], ignore_index=True)
+        df_full[self.config.time_col] = pd.to_datetime(df_full[self.config.time_col])
+        all_dates = sorted(df_full[self.config.time_col].unique())
+        
+        # 推断测试起始日期
+        test_start_date = pd.to_datetime(self._test_df[self.config.time_col].min())
+        
+        # 计算验证集大小
+        val_size = int(rolling_window_size * val_ratio)
+        
+        self.logger.info("\n" + "=" * 80)
+        self.logger.info("🔄 创建滚动窗口日批次加载器 (from_test 模式)")
+        self.logger.info("=" * 80)
+        self.logger.info(f"  rolling_window_size={rolling_window_size}, rolling_step={rolling_step}")
+        self.logger.info(f"  val_size={val_size}, test_size={test_size}")
+        self.logger.info(f"  测试起始日期: {test_start_date}")
+        
+        # 生成滚动窗口日期切分
+        test_period_dates = [d for d in all_dates if d >= test_start_date]
+        n_windows = (len(test_period_dates) - test_size) // rolling_step + 1
+        
+        rolling_windows = []
+        for w_idx in range(n_windows):
+            test_start_idx = w_idx * rolling_step
+            test_end_idx = test_start_idx + test_size
+            if test_end_idx > len(test_period_dates):
+                break
+            
+            test_dates_w = test_period_dates[test_start_idx:test_end_idx]
+            test_start = test_dates_w[0]
+            test_start_pos = list(all_dates).index(test_start)
+            
+            val_start_pos = max(0, test_start_pos - val_size)
+            train_end_pos = max(0, val_start_pos)
+            train_start_pos = max(0, train_end_pos - rolling_window_size)
+            
+            train_dates = list(all_dates[train_start_pos:train_end_pos])
+            val_dates = list(all_dates[val_start_pos:test_start_pos])
+            
+            if train_dates and val_dates and test_dates_w:
+                rolling_windows.append((train_dates, val_dates, test_dates_w))
+        
+        self.logger.info(f"  生成 {len(rolling_windows)} 个滚动窗口")
+        
+        # 公共数据集参数
+        common_kwargs = dict(
+            feature_cols=self._feature_cols,
+            label_col=self.config.label_col,
+            window_size=self.config.window_size,
+            time_col=self.config.time_col,
+            stock_col=self.config.stock_col,
+            enable_window_transform=self.config.enable_window_transform,
+            window_price_log=self.config.window_price_log,
+            window_volume_norm=self.config.window_volume_norm,
+            price_cols=self.config.price_cols,
+            close_col=self.config.close_col,
+            volume_cols=self.config.volume_cols,
+            label_rank_normalize=self.config.label_rank_normalize,
+            label_rank_output_range=self.config.label_rank_output_range,
+        )
+        
+        def make_daily_dataset(dates_list, valid_label_start_date=None):
+            df_subset = df_full[df_full[self.config.time_col].isin(dates_list)].copy()
+            return DailyBatchDataset(df=df_subset, valid_label_start_date=valid_label_start_date, **common_kwargs)
+        
+        def make_loader(dataset, shuffle):
+            if dataset is None or len(dataset) == 0:
+                return None
+            return DailyGraphDataLoader(
+                dataset=dataset,
+                graph_builder=graph_builder,
+                feature_cols=self._feature_cols,
+                shuffle_dates=shuffle,
+                device=device,
+                num_workers=0,
+                pin_memory=False,
+            )
+        
+        # 用于兼容 RollingDailyTrainer 的 WindowLoaders 类
+        @dataclass
+        class WindowLoaders:
+            train: DailyGraphDataLoader
+            val: DailyGraphDataLoader
+            test: DailyGraphDataLoader
+            train_dates: list
+            val_dates: list
+            test_dates: list
+        
+        DailyLoaderCollection = namedtuple('DailyLoaderCollection', ['train', 'val', 'test'])
+        
+        # 计算有效标签起始日期（避免窗口首部无标签）
+        valid_label_start_date = all_dates[self.config.window_size] if len(all_dates) > self.config.window_size else None
+        
+        window_loaders = []
+        for w_idx, (train_dates, val_dates, test_dates_w) in enumerate(rolling_windows):
+            train_dataset = make_daily_dataset(train_dates, valid_label_start_date if w_idx == 0 else None)
+            val_dataset = make_daily_dataset(val_dates)
+            test_dataset = make_daily_dataset(test_dates_w)
+            
+            train_loader = make_loader(train_dataset, shuffle=True)
+            val_loader = make_loader(val_dataset, shuffle=False)
+            test_loader = make_loader(test_dataset, shuffle=False)
+            
+            if train_loader is None or len(train_loader) == 0:
+                self.logger.warning(f"  ⚠️ 窗口 {w_idx+1} 训练集为空，跳过")
+                continue
+            
+            window_loaders.append(WindowLoaders(
+                train=train_loader, val=val_loader, test=test_loader,
+                train_dates=train_dates, val_dates=val_dates, test_dates=test_dates_w
+            ))
+            
+            if w_idx == 0:
+                self.logger.info(f"  窗口 1: train={len(train_dates)}天, val={len(val_dates)}天, test={len(test_dates_w)}天")
+        
+        self.logger.info(f"\n✅ 已创建 {len(window_loaders)} 个窗口的日批次加载器")
+        
+        # 返回可迭代集合
+        class RollingDailyLoaderCollection:
+            def __init__(self, windows):
+                self.windows = windows
+                self.n_windows = len(windows)
+            def __len__(self):
+                return self.n_windows
+            def __iter__(self):
+                return iter(self.windows)
+            def __getitem__(self, idx):
+                return self.windows[idx]
+            def enumerate(self):
+                return enumerate(self.windows)
+        
+        return RollingDailyLoaderCollection(window_loaders)
+    
     def run_full_pipeline(self, file_path: Optional[str] = None,
                          validate: bool = True,
                          auto_filter_features: bool = True) -> LoaderCollection:

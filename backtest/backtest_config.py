@@ -9,9 +9,15 @@ from pathlib import Path
 import torch
 import yaml
 
+# 导入 BaseConfig 基类
+try:
+    from ..config.base_config import BaseConfig
+except ImportError:
+    from config.base_config import BaseConfig
+
 
 @dataclass
-class BacktestConfig:
+class BacktestConfig(BaseConfig):
     """
     回测系统配置类
 
@@ -234,53 +240,15 @@ class BacktestConfig:
             assert self.stock_universe in ['hs300', 'zz500', 'zz800'], \
                 "stock_universe必须是None, 'hs300', 'zz500'或'zz800'"
     
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
-        return {
-            k: v for k, v in self.__dict__.items()
-            if not k.startswith('_')
-        }
-    
-    def to_yaml(self, yaml_path: str, **dump_kwargs):
-        """保存配置为 YAML 文件"""
-        yaml_file = Path(yaml_path)
-        yaml_file.parent.mkdir(parents=True, exist_ok=True)
-
-        with yaml_file.open('w', encoding='utf-8') as handle:
-            yaml.safe_dump(
-                self.to_dict(),
-                handle,
-                default_flow_style=False,
-                allow_unicode=True,
-                sort_keys=False,
-                **dump_kwargs,
-            )
-
-    @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> 'BacktestConfig':
-        """从字典创建配置"""
-        return cls(**config_dict)
-
-    @classmethod
-    def from_yaml(cls, yaml_path: str) -> 'BacktestConfig':
-        """从 YAML 文件加载配置"""
-        yaml_file = Path(yaml_path)
-
-        if not yaml_file.exists():
-            raise FileNotFoundError(f"配置文件不存在: {yaml_file}")
-
-        with yaml_file.open('r', encoding='utf-8') as handle:
-            config_dict = yaml.safe_load(handle) or {}
-
-        return cls.from_dict(config_dict)
-    
-    def update(self, **kwargs):
-        """更新配置参数"""
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                raise ValueError(f"未知的配置参数: {key}")
+    def validate(self) -> bool:
+        """
+        验证配置有效性 (重写 BaseConfig.validate)
+        
+        Returns:
+            是否有效
+        """
+        # 调用 __post_init__ 中的断言逻辑已在初始化时执行
+        return True
 
 
 @dataclass

@@ -54,6 +54,9 @@ from .train import (
     RollingTrainerConfig,
 )
 
+# 🆕 预测助手
+from .predict import predict_with_metadata, compute_ic, compute_ic_stats
+
 # 🆕 兼容旧接口（延迟导入，避免 dynamic_graph_trainer 缺失报错）
 def create_rolling_trainer(*args, **kwargs):
     """兼容旧接口 - 已废弃，请使用 RollingDailyTrainer"""
@@ -119,4 +122,9 @@ __all__ = [
     
     # 兼容旧接口
     'create_rolling_trainer',
+    
+    # 🆕 预测助手
+    'predict_with_metadata',
+    'compute_ic',
+    'compute_ic_stats',
 ]

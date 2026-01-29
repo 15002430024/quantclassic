@@ -1,0 +1,10 @@
+enabled: true
+name: null
+hidden_sizes:
+- 128
+- 64
+activation: relu
+use_batch_norm: false
+use_residual: false
+dropout: 0.2
+output_dim: 64

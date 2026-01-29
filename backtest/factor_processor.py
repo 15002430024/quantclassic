@@ -270,19 +270,32 @@ class FactorProcessor:
         
         return pd.concat(result)
     
-    def _auto_detect_factor_cols(self, df: pd.DataFrame) -> List[str]:
-        """自动识别因子列"""
+    def _auto_detect_factor_cols(self, df: pd.DataFrame, prefixes: Optional[List[str]] = None) -> List[str]:
+        """
+        自动识别因子列
+        
+        Args:
+            df: DataFrame
+            prefixes: 允许的列名前缀列表，默认 ['factor_', 'pred_', 'latent_']
+        
+        Returns:
+            识别到的因子列列表
+        """
+        if prefixes is None:
+            prefixes = ['factor_', 'pred_', 'latent_']
+        
+        exclude_suffixes = ['_winsorized', '_filled', '_std', '_neutral']
+        
         factor_cols = [
             col for col in df.columns 
-            if col.startswith('factor_') and not any(
-                suffix in col for suffix in ['_winsorized', '_filled', '_std', '_neutral']
-            )
+            if any(col.startswith(prefix) for prefix in prefixes)
+            and not any(suffix in col for suffix in exclude_suffixes)
         ]
         
         if len(factor_cols) == 0:
-            raise ValueError("未找到因子列，因子列应以'factor_'开头")
+            raise ValueError(f"未找到因子列，因子列应以 {prefixes} 之一开头")
         
-        self.logger.info(f"识别到 {len(factor_cols)} 个因子列")
+        self.logger.info(f"识别到 {len(factor_cols)} 个因子列: {factor_cols}")
         return factor_cols
     
     def _validate_dataframe(self, df: pd.DataFrame):
@@ -311,11 +324,11 @@ class FactorProcessor:
         Returns:
             统计信息字典
         """
-        stats = {}
+        stat_dict = {}
         
         # 原始因子统计
         original_values = original_df[factor_col].values
-        stats['original'] = {
+        stat_dict['original'] = {
             'mean': np.mean(original_values),
             'std': np.std(original_values),
             'min': np.min(original_values),
@@ -328,7 +341,7 @@ class FactorProcessor:
         processed_col = f'{factor_col}_std'
         if processed_col in processed_df.columns:
             processed_values = processed_df[processed_col].values
-            stats['processed'] = {
+            stat_dict['processed'] = {
                 'mean': np.mean(processed_values),
                 'std': np.std(processed_values),
                 'min': np.min(processed_values),
@@ -337,7 +350,7 @@ class FactorProcessor:
                 'kurt': stats.kurtosis(processed_values)
             }
         
-        return stats
+        return stat_dict
     
     def cross_sectional_rank(self, 
                             df: pd.DataFrame,

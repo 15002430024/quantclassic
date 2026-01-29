@@ -9,9 +9,13 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
-# 添加父目录到路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config.base_config import BaseConfig
+
+# 使用相对导入
+try:
+    from ..config.base_config import BaseConfig
+except ImportError:
+    # 兼容直接运行脚本的情况
+    from config.base_config import BaseConfig
 
 
 @dataclass

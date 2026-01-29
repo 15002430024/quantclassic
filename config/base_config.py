@@ -10,8 +10,9 @@ BaseConfig - 统一配置基类
 """
 
 from dataclasses import dataclass, field, fields, asdict
-from typing import Dict, Any, Optional, Type, TypeVar, get_type_hints
+from typing import Dict, Any, Optional, Type, TypeVar, get_type_hints, Union
 from pathlib import Path
+import warnings
 import yaml
 import json
 from abc import ABC
@@ -233,31 +234,46 @@ class BaseConfig(ABC):
         # 更新后重新验证
         self.validate()
     
-    def merge(self: T, other: T) -> T:
+    def merge(self: T, other: Union[T, Dict[str, Any]]) -> T:
         """
-        合并另一个配置对象
+        合并另一个配置对象或字典
         
         other 的非 None 值会覆盖当前配置
         
         Args:
-            other: 另一个配置对象
+            other: 另一个配置对象或字典
             
         Returns:
             合并后的新配置对象
         """
-        if not isinstance(other, self.__class__):
-            raise TypeError(f"只能合并相同类型的配置，期望 {self.__class__}，得到 {type(other)}")
-        
         # 创建当前配置的副本
         merged_dict = self.to_dict()
         
-        # 合并 other 的非 None 值
-        for f in fields(other):
-            value = getattr(other, f.name)
-            if value is not None:
-                merged_dict[f.name] = value
+        if isinstance(other, dict):
+            # 合并字典中的非 None 值
+            for key, value in other.items():
+                if value is not None:
+                    merged_dict[key] = value
+        elif isinstance(other, self.__class__):
+            # 合并配置对象的非 None 值
+            for f in fields(other):
+                value = getattr(other, f.name)
+                if value is not None:
+                    merged_dict[f.name] = value
+        else:
+            raise TypeError(f"只能合并相同类型的配置或字典，期望 {self.__class__} 或 dict，得到 {type(other)}")
         
         return self.__class__.from_dict(merged_dict)
+    
+    def copy(self: T) -> T:
+        """
+        创建配置对象的深拷贝
+        
+        Returns:
+            配置对象的副本
+        """
+        import copy as copy_module
+        return copy_module.deepcopy(self)
     
     def __repr__(self) -> str:
         """友好的字符串表示"""
@@ -395,6 +411,16 @@ class TrainerConfigDC(BaseConfig):
     verbose: bool = True
     log_interval: int = 50  # 与 model.train.TrainerConfig 对齐
     
+    def __post_init__(self):
+        """初始化后触发废弃警告"""
+        warnings.warn(
+            "TrainerConfigDC 已废弃，请改用 model.train.TrainerConfig。"
+            "TrainerConfigDC 将在未来版本中移除。\n"
+            "迁移方式: from model.train import TrainerConfig",
+            DeprecationWarning,
+            stacklevel=2
+        )
+    
     def validate(self) -> bool:
         """验证配置有效性（与 model.train.TrainerConfig.validate 保持一致）"""
         if self.n_epochs <= 0:
@@ -428,7 +454,10 @@ class TrainerConfigDC(BaseConfig):
         Returns:
             model.train.TrainerConfig 实例
         """
-        from ..model.train import TrainerConfig
+        try:
+            from model.train import TrainerConfig
+        except ImportError:
+            from ..model.train import TrainerConfig
         return TrainerConfig(**self.to_dict())
 
 
@@ -450,17 +479,40 @@ class RollingTrainerConfigDC(TrainerConfigDC):
     offload_to_cpu: bool = True
     clear_cache_on_window_end: bool = True
     
+    def __post_init__(self):
+        """初始化后触发废弃警告"""
+        warnings.warn(
+            "RollingTrainerConfigDC 已废弃，请改用 model.train.RollingTrainerConfig。"
+            "RollingTrainerConfigDC 将在未来版本中移除。\n"
+            "迁移方式: from model.train import RollingTrainerConfig",
+            DeprecationWarning,
+            stacklevel=2
+        )
+    
     def to_rolling_trainer_config(self):
         """
         转换为 model.train.RollingTrainerConfig 实例
         
         用于与滚动训练引擎对接。
+        注意：gc_interval, offload_to_cpu, clear_cache_on_window_end 字段
+        不会被传递，因为 RollingTrainerConfig 不包含这些字段。
         
         Returns:
             model.train.RollingTrainerConfig 实例
         """
-        from ..model.train import RollingTrainerConfig
-        return RollingTrainerConfig(**self.to_dict())
+        try:
+            from model.train import RollingTrainerConfig
+        except ImportError:
+            from ..model.train import RollingTrainerConfig
+        
+        # 只传递 RollingTrainerConfig 支持的字段
+        config_dict = self.to_dict()
+        # 移除 RollingTrainerConfig 不支持的字段
+        extra_fields = ['gc_interval', 'offload_to_cpu', 'clear_cache_on_window_end']
+        for field_name in extra_fields:
+            config_dict.pop(field_name, None)
+        
+        return RollingTrainerConfig(**config_dict)
 
 
 if __name__ == '__main__':

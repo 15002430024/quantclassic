@@ -300,11 +300,14 @@ class DataPreprocessor:
         df: pd.DataFrame
     ) -> List[str]:
         """获取步骤要处理的特征列"""
+        # 获取步骤指定的特征列（兜底为空列表，避免 None 迭代报错）
+        raw_features = step.features or []
+        
         # 列名映射
-        if self.config.column_mapping:
-            step_features = [self.config.column_mapping.get(f, f) for f in step.features]
+        if self.config.column_mapping and raw_features:
+            step_features = [self.config.column_mapping.get(f, f) for f in raw_features]
         else:
-            step_features = step.features
+            step_features = raw_features
         
         # 如果未指定特征,使用所有特征
         if not step_features:

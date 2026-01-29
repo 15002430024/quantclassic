@@ -118,9 +118,13 @@ class SimpleTrainer(BaseTrainer):
             batch_data: DataLoader 返回的数据
             
         Returns:
-            batch 损失值
+            batch 损失值（空批次返回 0.0）
         """
         x, y, adj, idx = self._parse_batch_data(batch_data)
+        
+        # 🆕 跳过空批次（避免 GAT 层 N=0 reshape 异常）
+        if x.size(0) == 0:
+            return 0.0
         
         # 移动数据到设备
         x = x.to(self.device)
@@ -165,6 +169,10 @@ class SimpleTrainer(BaseTrainer):
             for batch_data in val_loader:
                 x, y, adj, idx = self._parse_batch_data(batch_data)
                 
+                # 🆕 跳过空批次（避免 GAT 层 N=0 reshape 异常）
+                if x.size(0) == 0:
+                    continue
+                
                 x = x.to(self.device)
                 y = y.to(self.device)
                 if adj is not None:
@@ -179,6 +187,10 @@ class SimpleTrainer(BaseTrainer):
                 # 如果模型返回元组，取第一个元素
                 if isinstance(pred, tuple):
                     pred = pred[0]
+                
+                # 🆕 多因子预测聚合：如果 pred 是 [batch, F]，取均值得到 [batch]
+                if pred.dim() == 2 and pred.size(1) > 1:
+                    pred = pred.mean(dim=1)
                 
                 # 计算损失（验证时不使用相关性正则化）
                 if hasattr(self.criterion, 'base_loss'):
@@ -218,10 +230,15 @@ class SimpleTrainer(BaseTrainer):
         # 回退：Trainer 自己的实现（用于纯 nn.Module）
         self.model.eval()
         predictions = []
+        labels = []  # 🆕 同时收集标签用于返回
         
         with torch.no_grad():
             for batch_data in test_loader:
-                x, _, adj, _ = self._parse_batch_data(batch_data)
+                x, y, adj, _ = self._parse_batch_data(batch_data)
+                
+                # 🆕 跳过空批次（避免 GAT 层 N=0 reshape 异常）
+                if x.size(0) == 0:
+                    continue
                 
                 x = x.to(self.device)
                 if adj is not None:
@@ -236,16 +253,19 @@ class SimpleTrainer(BaseTrainer):
                     pred = pred[0]
                 
                 predictions.append(pred.cpu())
+                labels.append(y.cpu())
         
         if len(predictions) == 0:
             import numpy as np
-            return np.array([]) if return_numpy else torch.tensor([])
+            empty_result = np.array([]) if return_numpy else torch.tensor([])
+            return empty_result, empty_result
         
         result = torch.cat(predictions, dim=0)
+        labels_result = torch.cat(labels, dim=0)
         
         if return_numpy:
-            return result.numpy()
-        return result
+            return result.numpy(), labels_result.numpy()
+        return result, labels_result
 
 
 def create_simple_trainer(

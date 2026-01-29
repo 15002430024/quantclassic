@@ -1,0 +1,11 @@
+enabled: true
+name: null
+gat_type: standard
+hidden_dim: 32
+heads: 4
+concat: true
+top_k_neighbors: 10
+edge_threshold: 0.0
+use_edge_features: false
+dropout: 0.2
+use_residual: true

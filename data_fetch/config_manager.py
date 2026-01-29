@@ -8,9 +8,15 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 
+# 导入 BaseConfig 基类
+try:
+    from ..config.base_config import BaseConfig
+except ImportError:
+    from config.base_config import BaseConfig
+
 
 @dataclass
-class TimeConfig:
+class TimeConfig(BaseConfig):
     """
     时间配置
 
@@ -43,7 +49,7 @@ class TimeConfig:
 
 
 @dataclass
-class DataSourceConfig:
+class DataSourceConfig(BaseConfig):
     """
     数据源配置
 
@@ -119,7 +125,7 @@ class DataSourceConfig:
 
 
 @dataclass
-class UniverseConfig:
+class UniverseConfig(BaseConfig):
     """
     股票池配置
 
@@ -168,7 +174,7 @@ class UniverseConfig:
 
 
 @dataclass
-class DataFieldsConfig:
+class DataFieldsConfig(BaseConfig):
     """
     数据字段配置
 
@@ -205,7 +211,7 @@ class DataFieldsConfig:
 
 
 @dataclass
-class StorageConfig:
+class StorageConfig(BaseConfig):
     """
     存储配置
 
@@ -235,7 +241,7 @@ class StorageConfig:
 
 
 @dataclass
-class ProcessConfig:
+class ProcessConfig(BaseConfig):
     """
     处理流程配置
 
@@ -262,7 +268,7 @@ class ProcessConfig:
 
 
 @dataclass
-class FeatureConfig:
+class FeatureConfig(BaseConfig):
     """
     特征工程配置
 

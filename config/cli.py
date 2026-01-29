@@ -7,18 +7,40 @@ QuantClassic Run - CLI入口
 使用方式:
     python -m quantclassic.config.cli config.yaml
     或
-    qcrun config.yaml
+    qcrun config.yaml (需要 pip install -e . 安装后使用)
 """
 
 import sys
-import os
+import warnings
 from pathlib import Path
 
-# 添加父目录到Python路径，确保可以导入quantclassic
-current_dir = Path(__file__).resolve().parent
-quantclassic_root = current_dir.parent.parent  # 向上两级到jupyterlab目录
-if str(quantclassic_root) not in sys.path:
-    sys.path.insert(0, str(quantclassic_root))
+
+def _ensure_importable():
+    """
+    🔧 确保 quantclassic 可导入
+    
+    优先使用已安装的包，仅在未安装时临时追加路径并发出警告。
+    """
+    try:
+        import quantclassic  # noqa: F401
+        return  # 已安装，无需修改 sys.path
+    except ImportError:
+        pass
+    
+    # 未安装时尝试追加父目录
+    current_dir = Path(__file__).resolve().parent
+    quantclassic_root = current_dir.parent.parent
+    if str(quantclassic_root) not in sys.path:
+        warnings.warn(
+            f"quantclassic 未安装，临时追加路径: {quantclassic_root}\n"
+            "建议运行 'pip install -e .' 安装后使用 CLI。",
+            UserWarning,
+            stacklevel=2
+        )
+        sys.path.insert(0, str(quantclassic_root))
+
+
+_ensure_importable()
 
 from quantclassic.config.loader import ConfigLoader
 from quantclassic.config.runner import TaskRunner

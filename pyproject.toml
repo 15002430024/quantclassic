@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantclassic"
+version = "1.0.0"
+description = "QuantClassic - 量化因子与模型训练框架"
+readme = "ARCHITECTURE.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "QuantClassic Team"}
+]
+keywords = ["quantitative", "finance", "machine-learning", "deep-learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "pyyaml>=5.4",
+    "dataclasses-json>=0.5.0",
+]
+
+[project.optional-dependencies]
+torch = [
+    "torch>=2.0.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+all = [
+    "torch>=2.0.0",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quantclassic*", "config*", "data_set*", "data_processor*", "data_fetch*", "data_monitor*", "model*", "backtest*", "factor_hub*", "workflow*"]
+exclude = ["tests*", "docs*", "scripts*", "notebook*", "output*", "cache*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.yml", "*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

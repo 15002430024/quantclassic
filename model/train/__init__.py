@@ -33,6 +33,9 @@ from .simple_trainer import SimpleTrainer
 from .rolling_window_trainer import RollingWindowTrainer, RollingTrainerConfig
 from .rolling_daily_trainer import RollingDailyTrainer, DailyRollingConfig
 
+# 🆕 预测助手
+from ..predict import predict_with_metadata, compute_ic, compute_ic_stats
+
 
 __all__ = [
     # 基类与配置
@@ -51,4 +54,9 @@ __all__ = [
     # 配置
     'RollingTrainerConfig',
     'DailyRollingConfig',  # 🆕 导出日级滚动配置
+    
+    # 🆕 预测助手
+    'predict_with_metadata',
+    'compute_ic',
+    'compute_ic_stats',
 ]
