@@ -201,7 +201,7 @@ class DailyBatchDataset(Dataset):
         self.stock_data = {}
         self.logger.info(f"  正在构建 {self.df[self.stock_col].nunique()} 只股票的索引...")
         
-        for stock, group in self.df.groupby(self.stock_col):
+        for stock, group in self.df.groupby(self.stock_col, observed=False):
             group_sorted = group.sort_values(self.time_col)
             
             # 提取特征和标签数组

@@ -53,8 +53,8 @@ def _normalize_graph_builder_config(
     else:
         gb_dict = dict(gb_config)
     
-    # 如果是行业图，预先构建全局股票-行业映射
-    if gb_dict.get('type') == 'industry':
+    # 如果是行业图或混合图，预先构建全局股票-行业映射
+    if gb_dict.get('type') in ('industry', 'hybrid'):
         industry_col = gb_dict.get('industry_col', 'industry_name')
         if raw_data is not None and industry_col in raw_data.columns:
             stock_industry_mapping = dict(zip(

@@ -137,6 +137,15 @@ class SimpleTrainer(BaseTrainer):
         
         pred, hidden = self._forward_with_hidden(x, adj)
         
+        # 如果模型返回元组，取第一个元素
+        if isinstance(pred, tuple):
+            pred = pred[0]
+        
+        # 🆕 多因子预测聚合：如果 pred 是 [batch, F]，取均值得到 [batch]
+        # 与 validate_epoch 保持一致，确保训练/验证逻辑对齐
+        if pred.dim() == 2 and pred.size(1) > 1:
+            pred = pred.mean(dim=1)
+        
         # 计算损失
         if self._use_corr_loss and hidden is not None:
             # 带相关性正则化的损失

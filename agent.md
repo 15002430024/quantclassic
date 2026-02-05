@@ -2,6 +2,34 @@
 
 本指南面向 AI 与人类协作者，快速定位应读的模块文档并正确调用 QuantClassic 的生产链路（config · data_processor · data_set · model · backtest）。
 
+**最后更新**: 2026-02-02
+
+## 📜 变更日志
+
+### [2026-02-02] - REQ-001 多因子预测维度修复
+
+**修复:**
+- `model/train/rolling_daily_trainer.py`: `_predict_daily_window` 方法增加对多因子输出 `(N, F)` 的 squeeze / 取首列处理，解决 `ValueError: can only convert an array of size 1 to a Python scalar` 报错。
+
+---
+
+### [2026-01-30] - REQ-002 修复
+
+**修复:**
+- `data_set/manager.py`: `_normalize_graph_builder_config` 对 `type='hybrid'` 也注入 `stock_industry_mapping`，解决混合图训练时行业列缺失告警。
+
+---
+
+### [2026-01-30] - REQ-001 修复
+
+**修复:**
+- `model/train/simple_trainer.py`: 在 `train_batch` 方法中增加多因子预测聚合逻辑（`pred.mean(dim=1)`），与 `validate_epoch` 保持一致，解决 `output_dim > 1` 时张量维度不匹配的 RuntimeError。
+
+**修改:**
+- `data_set/graph/daily_graph_loader.py`: `groupby` 显式设置 `observed=False`，消除 pandas FutureWarning。
+
+---
+
 ## 1. 思维框架
 - 编排入口：始终以 config/TaskRunner 或 CLI (`qcrun` / `python -m quantclassic.config.cli`) 作为端到端入口。
 - 数据流：特征/标签 → data_processor (预处理/中性化) → data_set (划分+Loader) → model (训练/预测) → backtest (IC/分组/绩效) → workflow/output。

@@ -346,23 +346,42 @@ class RollingDailyTrainer(RollingWindowTrainer):
                 
                 pred = pred.cpu().numpy()
                 
+                # 🔧 REQ-001 修复：对多因子输出 (N, F) 做 squeeze / 取首列处理
+                # 确保 pred 和 y 都是一维 (N,) 以便逐样本提取标量
+                if pred.ndim == 2:
+                    if pred.shape[1] == 1:
+                        pred = pred.squeeze(axis=1)  # (N, 1) -> (N,)
+                    else:
+                        # 多因子输出：取首列（或可配置 eval_factor_index）
+                        self.logger.warning(
+                            f"检测到多因子预测输出 shape={pred.shape}，取首列用于评估。"
+                            "如需其他策略，请配置 eval_factor_index。"
+                        )
+                        pred = pred[:, 0]
+                
                 # 构建记录
                 n_samples = len(pred)
                 
                 # 处理标签
                 if y is not None:
                     y_np = y.cpu().numpy() if torch.is_tensor(y) else np.array(y)
+                    # 🔧 REQ-001 修复：同理对标签做 squeeze / 取首列
+                    if y_np.ndim == 2:
+                        if y_np.shape[1] == 1:
+                            y_np = y_np.squeeze(axis=1)
+                        else:
+                            y_np = y_np[:, 0]
                 else:
                     y_np = None
                 
                 for i in range(n_samples):
                     record = {
-                        'pred': float(pred[i]) if pred.ndim == 1 else float(pred[i].item()),
+                        'pred': float(pred[i]),
                         'window_idx': window_idx + 1
                     }
                     
                     if y_np is not None:
-                        record['y_true'] = float(y_np[i]) if y_np.ndim == 1 else float(y_np[i].item())
+                        record['y_true'] = float(y_np[i])
                     
                     if stock_ids is not None:
                         if isinstance(stock_ids, (list, np.ndarray)):
