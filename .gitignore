@@ -8,4 +8,14 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
-.gitignorenotebook/output/*.parquet
+
+# 大文件 - 数据/模型/输出
+*.parquet
+*.csv
+*.pth
+*.pt
+*.h5
+*.hdf5
+notebook/output/
+output/
+cache/
