@@ -1,113 +1,106 @@
-# Factorsystem 回测子系统
+# 回测子系统 (backtest)
 
-> ✅ **生产级入口** — 本模块为因子生成/处理/回测的唯一生产入口。
->
-> 如需进行回测，请优先使用本模块，而非 `factor_hub`（实验性）。
+> 基于 GeneralBacktest 引擎的因子回测框架
 
-工程化的因子回测流水线，覆盖因子生成/适配、预处理、IC 分析、组合构建、绩效评估与可视化。支持单因子与多因子、端到端模型推理与外部预测两种入口。
+本模块将 [GeneralBacktest](https://github.com/ElenYoung/GeneralBacktest) 引擎内嵌于 quantclassic，提供因子处理、IC 分析、权重生成、组合回测、可视化的完整链路。
 
 ## 快速上手
 
-### 多因子（推荐，基于 RollingWindowTrainer 预测）
+### 方式一：通过适配器（推荐，端到端因子→回测）
+
 ```python
-from quantclassic.backtest import BacktestConfig, MultiFactorBacktest
+from quantclassic.backtest import BacktestConfig, GeneralBacktestAdapter
 
-config = BacktestConfig(output_dir="output/backtest", save_plots=True)
-backtest = MultiFactorBacktest(config)
+config = BacktestConfig(
+    rebalance_freq='monthly',
+    long_ratio=0.2,
+    short_ratio=0.2,
+    buy_price='open',
+    sell_price='close',
+)
 
-# predictions_df: 包含多因子预测及标签的 DataFrame
-results = backtest.run(predictions_df, label_col="y_ret_10d")
+adapter = GeneralBacktestAdapter(config)
+results = adapter.run(
+    factor_df=processed_df,    # 含 trade_date, order_book_id, factor_col
+    price_df=price_df,         # 含 trade_date, order_book_id, open, close, adj_factor
+    factor_col='factor_raw_std',
+    weight_mode='long_short',
+)
+
+# results 包含: nav_series, positions, trade_records, metrics, bt_instance
+results['bt_instance'].plot_dashboard()
 ```
 
-### 端到端模型推理（生成因子再回测）
+### 方式二：直接使用 GeneralBacktest
+
 ```python
-from quantclassic.backtest import BacktestConfig, FactorBacktestSystem
+from quantclassic.backtest.general_backtest import GeneralBacktest
 
-config = BacktestConfig(output_dir="output/backtest")
-system = FactorBacktestSystem(config)
-model = system.load_model("output/best_model.pth")
+bt = GeneralBacktest(start_date='2020-01-01', end_date='2025-12-31')
+results = bt.run_backtest(
+    weights_data=weights_df,     # [date, code, weight]
+    price_data=price_df,         # [date, code, open, close, adj_factor]
+    buy_price='open',
+    sell_price='close',
+    adj_factor_col='adj_factor',
+    close_price_col='close',
+)
 
-# data_df 需包含特征列与 ts_code/trade_date
-results = system.run_backtest(data_df, model)
+bt.print_metrics()
+bt.plot_dashboard()
 ```
 
-## 架构与模块关系
-
-- 因子生成/适配：`FactorGenerator`（端到端推理），`PredictionAdapter`（外部预测整合，多因子集成）
-- 因子预处理：`FactorProcessor`（去极值、填充、标准化、中性化；自动检测 `factor_`/`pred_`/`latent_` 前缀）
-- 分析与构建：`ICAnalyzer` → `PortfolioBuilder` → `PerformanceEvaluator`
-- 可视化与报告：`ResultVisualizer` / `ResultVisualizerPlotly`
-- 基准与缓存：`BenchmarkManager`（可选，用于基准收益拉取与缓存）
-
-数据流：生成/适配 → 预处理 → IC → 分组/多空 → 绩效 → 报告/文件输出。
-
-## 入口与适用场景
-
-| 入口 | 适用 | 因子列默认 | 输入要求 |
-|------|------|-----------|----------|
-| **MultiFactorBacktest** | ✅ 推荐，多因子生产/研究 | 适配后自动选择 | predictions_df (含 label) |
-| BacktestRunner | 单因子快速验证 | `factor_value` | 已有因子与收益列 |
-| FactorBacktestSystem | 端到端模型推理 | 自动推断（优先 `*_std`，其次 `*_neutral/pred_`） | 原始特征 + 模型 |
-
-提示：`FactorBacktestSystem.run_backtest` 未传 `factor_col` 时，会在处理后数据中自动选择首个 `*_std` 列；若有特定口径，请显式传 `factor_col`/`factor_cols`。
-
-## 因子/收益列约定
-
-- 自动检测前缀：`factor_`、`pred_`、`latent_`（排除 `_winsorized/_filled/_std/_neutral` 后缀）。
-- 默认收益列：`y_true`（系统）/ `y_processed`（Runner）/ `label_col` 参数（MultiFactor）。
-- 多因子集成：`PredictionAdapter` 支持 `mean` / `ic_weighted` / `best` / `custom` 权重。
-
-## 配置要点（BacktestConfig）
-
-- 因子处理：`winsorize_method`、`standardize_method`、`industry_neutral`、`market_value_neutral`。
-- 组合构建：`n_groups`、`rebalance_freq`、`long_ratio`/`short_ratio`、`weight_method`。
-- 绩效与可视化：`save_plots`、`generate_excel`、`plot_style`。
-- 基准：`benchmark_index` 或 `custom_benchmark_col`（配合 `BenchmarkManager`）。
-
-## 依赖与运行
-
-```bash
-pip install pandas numpy scipy scikit-learn torch matplotlib seaborn tqdm
-```
-
-## 目录速览
+## 架构
 
 ```
 backtest/
-    backtest_system.py       # 端到端控制器（含因子生成）
-    multi_factor_backtest.py # 多因子主入口（推荐）
-    backtest_runner.py       # 单因子快捷入口
-    factor_generator.py      # 模型推理产因子
-    prediction_adapter.py    # 预测结果适配与集成
-    factor_processor.py      # 因子预处理
-    ic_analyzer.py           # IC/ICIR 计算
-    portfolio_builder.py     # 分组与多空构建
-    performance_evaluator.py # 绩效指标
-    result_visualizer.py     # 可视化
-    benchmark_manager.py     # 基准拉取/缓存（可选）
-    update_readme/           # 详细指南与示例
-    plan.md                  # 问题与修改记录
+├── general_backtest/               # GeneralBacktest 引擎（内嵌）
+│   ├── __init__.py
+│   ├── backtest.py                 # 核心回测引擎
+│   └── utils.py                    # 指标计算工具
+├── general_backtest_adapter.py     # quantclassic → GeneralBacktest 适配层
+├── backtest_config.py              # 回测配置（BacktestConfig）
+├── portfolio_builder.py            # 权重生成 + 组合构建
+├── factor_generator.py             # 模型推理产因子
+├── factor_processor.py             # 因子预处理（去极值/标准化/中性化）
+├── ic_analyzer.py                  # IC/ICIR 分析
+├── prediction_adapter.py           # 多因子预测适配与集成
+├── benchmark_manager.py            # 基准指数管理
+└── __init__.py
 ```
 
-## 文档与示例
+数据流：
+```
+因子生成/适配 → 因子预处理 → IC 分析 → 权重生成 → GeneralBacktest 回测 → 指标/可视化
+```
 
-- `update_readme/BACKTEST_GUIDE.md`：全流程详细说明与参数解释
-- `example_backtest.py`：端到端示例
-- `example_benchmark_usage.py`：基准管理示例
+## 配置要点（BacktestConfig）
 
-## 功能清单与实现要点
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `buy_price` | 买入价格字段 | `'open'` |
+| `sell_price` | 卖出价格字段 | `'close'` |
+| `rebalance_freq` | 调仓频率 | `'monthly'` |
+| `long_ratio` | 做多比例 | `0.2` |
+| `short_ratio` | 做空比例 | `0.2` |
+| `weight_method` | 权重方法 | `'equal'` |
+| `consider_cost` | 是否计交易成本 | `False` |
+| `commission_rate` | 佣金率 | `0.0003` |
+| `slippage_rate` | 滑点率 | `0.001` |
 
-- 因子生成/适配：`FactorGenerator` 支持预测值与隐变量两种模式；`PredictionAdapter` 聚合多因子（mean/ic_weighted/best/custom）并计算因子 IC 权重。
-- 因子自动识别与预处理：`FactorProcessor` 自动检测 `factor_`/`pred_`/`latent_` 前缀，去极值/填充/标准化/可选中性化，产出 `*_std`/`*_neutral` 列；默认分层按 `trade_date` 截面。
-- 因子列自动推断：`FactorBacktestSystem.run_backtest` 在未传 `factor_col` 时自动选择首个 `*_std`（备选 `_neutral`/`pred_`/`latent_`/`factor_`）。
-- IC 分析：`ICAnalyzer` 提供 Spearman/Pearson、IC/RankIC、ICIR、胜率、t 统计，并支持多期持有期配置。
-- 组合构建：`PortfolioBuilder` 基于分位分组与 top/bottom 多空，支持等权/因子权重/市值权重，换仓频率与组数可配。
-- 绩效评估：`PerformanceEvaluator` 计算年化收益、波动、夏普、最大回撤、卡玛等；支持基准列，配合 `BenchmarkManager` 自动拉取并合并基准收益。
-- 可视化：`ResultVisualizer`/`ResultVisualizerPlotly` 输出累计收益、回撤、IC 序列/分布、分组表现等图表，可控制保存与输出格式。
-- 快速测试：`FactorBacktestSystem.quick_test` 使用快速模板配置运行，并在完成后恢复原始配置与组件实例。
-- 日志与输出：统一 logger（console/file），回测结果保存因子、IC、组合、绩效指标（含可选 Excel），图表输出到 `output_dir/plots`。
+## GeneralBacktest 功能
 
-## 版本与变更
+内嵌的 GeneralBacktest (v1.0.2) 支持：
+- 灵活调仓时间（不固定频率）
+- 向量化计算（高性能）
+- 15+ 性能指标（夏普、索提诺、卡玛、信息比率等）
+- 8+ 可视化图表（净值曲线、月度热力图、持仓热力图、换手率分析等）
+- 基准对比分析
+- 交易成本与滑点模拟
 
-- v1.1.0：修复因子列检测、日志作用域、quick_test 状态恢复、因子列自动推断
+## 版本
+
+- v2.0.0：GeneralBacktest 内嵌迁移，移除旧回测引擎
+- v1.2.0：引入 GeneralBacktest 适配层
+- v1.1.0：修复因子列检测
 - v1.0.0：初始版本

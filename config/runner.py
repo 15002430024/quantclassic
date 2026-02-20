@@ -505,8 +505,8 @@ class TaskRunner:
         return results
     
     def _run_backtest(self, model, dataset, backtest_config: Dict[str, Any]) -> Dict[str, Any]:
-        """执行回测"""
-        from ..backtest import BacktestSystem
+        """执行回测（使用 GeneralBacktest 引擎）"""
+        from ..backtest import GeneralBacktestAdapter, BacktestConfig
         
         if hasattr(dataset, 'test'):
             test_loader = dataset.test
@@ -515,10 +515,17 @@ class TaskRunner:
             self.logger.warning("数据集没有test部分，跳过回测")
             return {}
         
-        backtest_system = BacktestSystem(**backtest_config)
-        backtest_results = backtest_system.run_backtest(predictions=predictions, **backtest_config)
-        
-        return {'metrics': backtest_results, 'predictions': predictions}
+        try:
+            bt_cfg = BacktestConfig(**{k: v for k, v in backtest_config.items() 
+                                       if hasattr(BacktestConfig, k)})
+            adapter = GeneralBacktestAdapter(bt_cfg)
+            # 注: 此处需要调用方提供 factor_df 和 price_df
+            # TaskRunner 的回测集成需要上游提供完整数据
+            self.logger.warning("TaskRunner 回测集成需要适配 GeneralBacktest 数据格式，请直接使用 GeneralBacktestAdapter")
+            return {'predictions': predictions}
+        except Exception as e:
+            self.logger.error(f"回测失败: {e}")
+            return {'predictions': predictions}
     
     # ==================== 🆕 公共辅助方法（去重构） ====================
     

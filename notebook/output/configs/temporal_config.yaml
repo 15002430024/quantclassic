@@ -1,7 +1,7 @@
 enabled: true
 name: null
 rnn_type: lstm
-hidden_size: 32
+hidden_size: 64
 num_layers: 2
 bidirectional: false
 use_attention: true

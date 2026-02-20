@@ -1,7 +1,7 @@
 enabled: true
 name: null
 gat_type: standard
-hidden_dim: 32
+hidden_dim: 64
 heads: 4
 concat: true
 top_k_neighbors: 10

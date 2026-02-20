@@ -14,7 +14,7 @@ temporal:
   enabled: true
   name: null
   rnn_type: lstm
-  hidden_size: 32
+  hidden_size: 64
   num_layers: 2
   bidirectional: false
   use_attention: true
@@ -26,7 +26,7 @@ graph:
   enabled: true
   name: null
   gat_type: standard
-  hidden_dim: 32
+  hidden_dim: 64
   heads: 4
   concat: true
   top_k_neighbors: 10

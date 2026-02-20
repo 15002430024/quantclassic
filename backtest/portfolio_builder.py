@@ -63,6 +63,155 @@ class PortfolioBuilder:
             'groups': group_df
         }
     
+    def generate_weights(self,
+                        factor_df: pd.DataFrame,
+                        factor_col: str = 'factor_raw_std',
+                        mode: str = 'long_short') -> pd.DataFrame:
+        """
+        生成符合 GeneralBacktest 格式的权重 DataFrame。
+        
+        仅输出调仓日的权重（GeneralBacktest 自动持有至下次调仓）。
+        
+        Args:
+            factor_df: 因子DataFrame，需含 trade_date, stock_col, factor_col 列
+            factor_col: 因子列名
+            mode: 权重模式
+                - 'long_only': 仅做多高因子值股票，权重之和为 1.0（满仓）
+                - 'short_only': 仅做空低因子值股票，权重之和为 -1.0（满仓）
+                - 'long_short': 多空组合，多头正权重(long_ratio)+空头负权重(-short_ratio)
+                - 'group': 按 n_groups 分组，仅做多指定组
+            
+        Returns:
+            权重 DataFrame，列: [date, code, weight]
+        """
+        self.logger.info(f"生成权重表 (mode={mode})...")
+        
+        # 检测股票标识列
+        stock_col = 'order_book_id' if 'order_book_id' in factor_df.columns else 'ts_code'
+        
+        all_dates = sorted(factor_df['trade_date'].unique())
+        rebalance_dates = set(pd.Timestamp(d) for d in self.get_rebalance_dates(all_dates))
+        
+        all_weights = []
+        
+        for date in all_dates:
+            if pd.Timestamp(date) not in rebalance_dates:
+                continue
+            
+            group = factor_df[factor_df['trade_date'] == date].copy()
+            if len(group) == 0:
+                continue
+            
+            # 移除因子值为 NaN 的行
+            group = group.dropna(subset=[factor_col])
+            if len(group) == 0:
+                continue
+            
+            if mode in ('long_only', 'long_short'):
+                # 做多: 选取因子值最高的 top N
+                n_long = max(1, int(len(group) * self.config.long_ratio))
+                long_stocks = group.nlargest(n_long, factor_col)
+                long_weights = self._calculate_weights(long_stocks, factor_col)
+                if long_weights.sum() > 0:
+                    if mode == 'long_only':
+                        # 满仓模式：权重和归一化到 1.0
+                        long_weights = long_weights / long_weights.sum()
+                    else:
+                        # long_short 模式：权重和归一化到 long_ratio
+                        long_weights = long_weights * self.config.long_ratio / long_weights.sum()
+                
+                for idx, (_, row) in enumerate(long_stocks.iterrows()):
+                    all_weights.append({
+                        'date': date,
+                        'code': row[stock_col],
+                        'weight': float(long_weights[idx])
+                    })
+            
+            if mode in ('short_only', 'long_short'):
+                # 做空: 选取因子值最低的 bottom N，权重为负
+                n_short = max(1, int(len(group) * self.config.short_ratio))
+                short_stocks = group.nsmallest(n_short, factor_col)
+                short_weights = self._calculate_weights(short_stocks, factor_col)
+                if short_weights.sum() > 0:
+                    if mode == 'short_only':
+                        # 满仓模式：权重和归一化到 1.0
+                        short_weights = short_weights / short_weights.sum()
+                    else:
+                        # long_short 模式：权重和归一化到 short_ratio
+                        short_weights = short_weights * self.config.short_ratio / short_weights.sum()
+                
+                for idx, (_, row) in enumerate(short_stocks.iterrows()):
+                    all_weights.append({
+                        'date': date,
+                        'code': row[stock_col],
+                        'weight': float(-short_weights[idx])
+                    })
+            
+            if mode == 'group':
+                # 分组模式: 仅做多，等权归一化为 1.0
+                n_long = max(1, int(len(group) * self.config.long_ratio))
+                long_stocks = group.nlargest(n_long, factor_col)
+                eq_weight = 1.0 / len(long_stocks)
+                for _, row in long_stocks.iterrows():
+                    all_weights.append({
+                        'date': date,
+                        'code': row[stock_col],
+                        'weight': eq_weight
+                    })
+        
+        if len(all_weights) == 0:
+            raise ValueError("生成的权重表为空，请检查因子数据和调仓日设置")
+        
+        weights_df = pd.DataFrame(all_weights)
+        weights_df['date'] = pd.to_datetime(weights_df['date'])
+        
+        # 数据质量校验
+        self._validate_weights(weights_df, mode=mode)
+        
+        self.logger.info(f"权重表生成完成: {len(weights_df)} 行, "
+                        f"{weights_df['date'].nunique()} 个调仓日, "
+                        f"{weights_df['code'].nunique()} 只股票")
+        
+        return weights_df
+    
+    def _validate_weights(self, weights_df: pd.DataFrame, mode: str = 'long_short'):
+        """
+        校验权重表合规性
+        
+        Args:
+            weights_df: 权重 DataFrame [date, code, weight]
+            mode: 权重模式，用于确定预期权重绝对值之和
+        """
+        # 检查 NaN / Inf
+        if weights_df['weight'].isna().any():
+            raise ValueError("权重表中包含 NaN 值")
+        if np.isinf(weights_df['weight'].values).any():
+            raise ValueError("权重表中包含 Inf 值")
+        
+        # 检查同一日期同一 code 不可重复
+        dup = weights_df.groupby(['date', 'code']).size()
+        dup_rows = dup[dup > 1]
+        if len(dup_rows) > 0:
+            raise ValueError(f"权重表中存在重复的 (date, code) 组合: {dup_rows.head()}")
+        
+        # 根据 mode 确定预期权重绝对值之和
+        if mode == 'long_only':
+            expected = 1.0
+        elif mode == 'short_only':
+            expected = 1.0
+        elif mode == 'group':
+            expected = 1.0
+        else:  # long_short
+            expected = self.config.long_ratio + self.config.short_ratio
+        
+        # 每个调仓日的权重绝对值之和校验
+        for date, grp in weights_df.groupby('date'):
+            abs_sum = grp['weight'].abs().sum()
+            if abs(abs_sum - expected) > 1e-4:
+                self.logger.warning(
+                    f"调仓日 {date}: 权重绝对值之和 {abs_sum:.6f} 与预期 {expected:.6f} 偏差较大"
+                )
+    
     def create_factor_groups(self,
                             factor_df: pd.DataFrame,
                             factor_col: str,
@@ -113,6 +262,7 @@ class PortfolioBuilder:
                              return_col: str) -> pd.DataFrame:
         """
         创建多头组合（做多高因子值股票）
+        支持调仓频率: 仅在 rebalance 日重新选股，非调仓日持有不变
         
         Args:
             factor_df: 因子DataFrame
@@ -122,24 +272,41 @@ class PortfolioBuilder:
         Returns:
             多头组合DataFrame
         """
-        result = []
+        # 检测股票标识列
+        stock_col = 'order_book_id' if 'order_book_id' in factor_df.columns else 'ts_code'
         
-        for date, group in factor_df.groupby('trade_date'):
-            # 选择top股票
-            n_stocks = int(len(group) * self.config.long_ratio)
-            top_stocks = group.nlargest(n_stocks, factor_col)
+        all_dates = sorted(factor_df['trade_date'].unique())
+        rebalance_dates = set(pd.Timestamp(d) for d in self.get_rebalance_dates(all_dates))
+        
+        result = []
+        current_stock_ids = None
+        
+        for date in all_dates:
+            group = factor_df[factor_df['trade_date'] == date]
             
-            # 计算权重
-            weights = self._calculate_weights(top_stocks, factor_col)
+            # 调仓日或首日: 重新选股
+            if pd.Timestamp(date) in rebalance_dates or current_stock_ids is None:
+                n_stocks = max(1, int(len(group) * self.config.long_ratio))
+                top_stocks = group.nlargest(n_stocks, factor_col)
+                current_stock_ids = set(top_stocks[stock_col].values)
             
-            # 计算组合收益
-            portfolio_return = (top_stocks[return_col] * weights).sum()
+            # 获取当日持仓股票数据
+            held = group[group[stock_col].isin(current_stock_ids)]
+            if len(held) > 0:
+                weights = self._calculate_weights(held, factor_col)
+                portfolio_return = (held[return_col] * weights).sum()
+                n_held = len(held)
+                avg_factor = held[factor_col].mean()
+            else:
+                portfolio_return = 0
+                n_held = 0
+                avg_factor = 0
             
             result.append({
                 'trade_date': date,
                 'portfolio_return': portfolio_return,
-                'n_stocks': len(top_stocks),
-                'avg_factor': top_stocks[factor_col].mean()
+                'n_stocks': n_held,
+                'avg_factor': avg_factor
             })
         
         long_df = pd.DataFrame(result)
@@ -156,6 +323,7 @@ class PortfolioBuilder:
                               return_col: str) -> pd.DataFrame:
         """
         创建空头组合（做空低因子值股票）
+        支持调仓频率: 仅在 rebalance 日重新选股，非调仓日持有不变
         
         Args:
             factor_df: 因子DataFrame
@@ -165,24 +333,41 @@ class PortfolioBuilder:
         Returns:
             空头组合DataFrame
         """
-        result = []
+        # 检测股票标识列
+        stock_col = 'order_book_id' if 'order_book_id' in factor_df.columns else 'ts_code'
         
-        for date, group in factor_df.groupby('trade_date'):
-            # 选择bottom股票
-            n_stocks = int(len(group) * self.config.short_ratio)
-            bottom_stocks = group.nsmallest(n_stocks, factor_col)
+        all_dates = sorted(factor_df['trade_date'].unique())
+        rebalance_dates = set(pd.Timestamp(d) for d in self.get_rebalance_dates(all_dates))
+        
+        result = []
+        current_stock_ids = None
+        
+        for date in all_dates:
+            group = factor_df[factor_df['trade_date'] == date]
             
-            # 计算权重
-            weights = self._calculate_weights(bottom_stocks, factor_col)
+            # 调仓日或首日: 重新选股
+            if pd.Timestamp(date) in rebalance_dates or current_stock_ids is None:
+                n_stocks = max(1, int(len(group) * self.config.short_ratio))
+                bottom_stocks = group.nsmallest(n_stocks, factor_col)
+                current_stock_ids = set(bottom_stocks[stock_col].values)
             
-            # 计算组合收益（做空，所以取负）
-            portfolio_return = -(bottom_stocks[return_col] * weights).sum()
+            # 获取当日持仓股票数据
+            held = group[group[stock_col].isin(current_stock_ids)]
+            if len(held) > 0:
+                weights = self._calculate_weights(held, factor_col)
+                portfolio_return = -(held[return_col] * weights).sum()
+                n_held = len(held)
+                avg_factor = held[factor_col].mean()
+            else:
+                portfolio_return = 0
+                n_held = 0
+                avg_factor = 0
             
             result.append({
                 'trade_date': date,
                 'portfolio_return': portfolio_return,
-                'n_stocks': len(bottom_stocks),
-                'avg_factor': bottom_stocks[factor_col].mean()
+                'n_stocks': n_held,
+                'avg_factor': avg_factor
             })
         
         short_df = pd.DataFrame(result)
@@ -368,6 +553,9 @@ class PortfolioBuilder:
         Returns:
             回测结果DataFrame
         """
+        # 检测股票标识列
+        stock_col = 'order_book_id' if 'order_book_id' in factor_df.columns else 'ts_code'
+        
         all_dates = sorted(factor_df['trade_date'].unique())
         rebalance_dates = self.get_rebalance_dates(all_dates)
         
@@ -386,7 +574,7 @@ class PortfolioBuilder:
                 target_positions = {}
                 weights = self._calculate_weights(top_stocks, factor_col)
                 for idx, (_, row) in enumerate(top_stocks.iterrows()):
-                    target_positions[row['ts_code']] = weights[idx]
+                    target_positions[row[stock_col]] = weights[idx]
                 
                 # 计算换手率
                 if len(current_positions) > 0:
@@ -400,8 +588,8 @@ class PortfolioBuilder:
             
             # 计算组合收益
             portfolio_return = 0
-            for ts_code, weight in current_positions.items():
-                stock_data = date_data[date_data['ts_code'] == ts_code]
+            for stock_id, weight in current_positions.items():
+                stock_data = date_data[date_data[stock_col] == stock_id]
                 if len(stock_data) > 0:
                     portfolio_return += weight * stock_data[return_col].iloc[0]
             

@@ -47,7 +47,7 @@ flowchart LR
     subgraph Modeling["建模与评估"]
         mdl["model/\nModelFactory + PyTorchModel 系列 + Trainers"]
         fh["factor_hub/\nFactorRegistry + BaseFactor"]
-        bt["backtest/\nFactorBacktestSystem\n(Generator/Processor/IC/Portfolio/Perf/Visualizer)"]
+        bt["backtest/\nFactorBacktestSystem\n(Generator/Processor/IC/Portfolio/Perf/Visualizer)\n+ GeneralBacktestAdapter"]
     end
 
     out["output/ & cache/\n特征、模型、回测、实验记录"]
@@ -105,7 +105,7 @@ flowchart LR
 | `data_monitor/` | 数据泄漏检测与质量监控 | `StaticLeakageDetector`, `DynamicLeakageDetector`, `leakage_detection_config.py` | 数据帧、时间/分组字段 | 泄漏与质量报告，警告日志 |
 | `factor_hub/` | 因子协议与注册中心 | `StandardDataProtocol`, `FactorRegistry`, `BaseFactor`, providers/writers | 标准化行情数据 | 可调用的因子集合、导出写入器产物 |
 | `model/` | 模型定义与训练工具链 | `ModelFactory`, `PyTorchModel` 系列、`rolling_daily_trainer.py`, `dynamic_graph_trainer.py`, `model_config.py` | DataLoader/图数据、模型配置 | 训练好的模型、预测值/潜在因子、最佳指标、模型文件 |
-| `backtest/` | 因子/策略回测与可视化 | `FactorBacktestSystem`, `FactorGenerator`, `FactorProcessor`, `ICAnalyzer`, `PortfolioBuilder`, `PerformanceEvaluator`, `ResultVisualizer` | 因子/预测值、价格数据、回测配置 | 绩效指标、IC统计、多空组合收益、图表 |
+| `backtest/` | 因子回测与可视化，基于内嵌 GeneralBacktest 引擎 | `GeneralBacktest`, `GeneralBacktestAdapter`, `FactorGenerator`, `FactorProcessor`, `ICAnalyzer`, `PortfolioBuilder`, `PredictionAdapter`, `BenchmarkManager` | 因子/预测值、价格数据、回测配置 | 绩效指标、IC统计、权重表、净值序列、交易记录、图表 |
 | `workflow/` | 实验追踪与对象管理 | `QCRecorder (R)`, `ExpManager`, `Experiment`, `Recorder`, `recorder.py` | 训练/回测期间的参数、指标、对象 | `output/experiments` 下的 params/metrics/objects 索引与存档 |
 | `output/` `cache/` | 结果与缓存落地 | 文件系统目录 | 各阶段产物 | 复现所需的模型、数据、报告、缓存 |
 
@@ -117,7 +117,7 @@ flowchart LR
 - 预处理：`data_processor.DataPreprocessor.fit_transform` 生成预处理数据与 `preprocessor.pkl`
 - 数据集：`data_set.DataManager.create_datasets` + `get_dataloaders` 构建 Dataset/DataLoader（含滚动/动态图）
 - 训练与预测：`ModelFactory` 创建模型，`PyTorchModel`/`RollingDailyTrainer`/`DynamicGraphTrainer` 训练并输出预测/潜在因子
-- 回测与记录：可选 `backtest.run_backtest`，最终通过 `workflow.R` 写入 `output/experiments`
+- 回测与记录：`GeneralBacktestAdapter.run()` 或直接 `GeneralBacktest.run_backtest()`，最终通过 `workflow.R` 写入 `output/experiments`
 
 ---
 
@@ -433,56 +433,78 @@ pred = model.predict(test_loader)
 
 ---
 
-### 3.6 backtest/FactorBacktestSystem（回测与评估）
+### 3.6 backtest/GeneralBacktest + Adapter（回测与评估）
 
 | 属性 | 值 |
 |------|-----|
-| 路径 | `backtest/backtest_system.py` 及子模块 |
-| 职责 | 基于因子或模型预测构建组合，计算 IC/收益/风险指标并生成可视化 |
-| 依赖 | `FactorGenerator`, `FactorProcessor`, `PortfolioBuilder`, `ICAnalyzer`, `PerformanceEvaluator`, `ResultVisualizer` |
+| 路径 | `backtest/general_backtest/` (引擎), `backtest/general_backtest_adapter.py` (适配层), 及辅助子模块 |
+| 职责 | 基于因子/模型预测生成权重，通过 GeneralBacktest 引擎执行回测，计算 IC/绩效指标并生成可视化 |
+| 依赖 | `GeneralBacktest`, `FactorGenerator`, `FactorProcessor`, `PortfolioBuilder`, `ICAnalyzer`, `PredictionAdapter`, `BenchmarkManager` |
 
 **输入Schema**:
 ```python
+# factor_df (因子数据)
 DataFrame[
     trade_date: datetime64,
     order_book_id: str,
-    factor|pred: float,            # 单因子或多列因子
-    label?: float,                 # 可选，用于对照
-    price_fields?: float           # 价格/权重计算所需
+    factor_col: float,             # 因子列
 ]
-BacktestConfig(n_groups: int=10, rebalance_freq: str='monthly', weight_method: str='equal',
-               industry_neutral: bool=False, consider_cost: bool=False, save_plots: bool=True)
+# price_df (价格数据)
+DataFrame[
+    trade_date: datetime64,
+    order_book_id: str,
+    open: float,
+    close: float,
+    adj_factor: float,             # 缺失默认 1.0
+]
+# weights_df (可选，直接提供权重跳过因子→权重转换)
+DataFrame[
+    date: datetime64,
+    code: str,
+    weight: float,                 # 调仓日权重，多头正值/空头负值
+]
+BacktestConfig(
+    engine: str='general_backtest',
+    buy_price: str='open', sell_price: str='close',
+    rebalance_freq: str='monthly', weight_method: str='equal',
+    long_ratio: float=0.2, short_ratio: float=0.2,
+    general_backtest_options: Dict[str, Any],
+    consider_cost: bool=False, save_plots: bool=True
+)
 ```
 
 **输出Schema**:
 ```python
 Dict[
-    metrics: {
-        ic_stats: {ic_mean: float, ic_ir: float, win_rate: float},
-        performance_metrics: {
-            long_short: {annual_return: float, sharpe_ratio: float, max_drawdown: float, vol: float},
-            group_returns: Dict[int, float]
-        }
-    },
-    plots: List[pathlib.Path]
+    nav_series: pd.Series,           # 每日净值
+    positions: pd.DataFrame,         # 每日持仓明细 [date, asset, weight]
+    trade_records: pd.DataFrame,     # 交易记录 [date, commission, return_*]
+    metrics: Dict[str, float],       # 15+ 绩效指标（年化收益、夏普、回撤等）
+    weights_data: pd.DataFrame,      # 输入权重表
+    bt_instance: GeneralBacktest,    # 可调用 plot_all() 等可视化方法
 ]
 ```
 
 **核心逻辑**:
 ```python
-factor_df = factor_generator.generate_factors(df)
-processed = factor_processor.process(factor_df)
-ic_df = ic_analyzer.calculate_ic(processed)
-ports = portfolio_builder.build_portfolios(processed, n_groups=config.n_groups)
-perf = performance_evaluator.evaluate_portfolio(ports["long_short"], cost=config.cost)
-result_visualizer.save_all(ports, ic_df, perf, save_dir=config.output_dir)
+# 方式一：通过适配器（因子→权重→回测）
+adapter = GeneralBacktestAdapter(config)
+results = adapter.run(factor_df, price_df, factor_col, weight_mode='long_short')
+# 内部: PortfolioBuilder.generate_weights() → GeneralBacktest.run_backtest()
+
+# 方式二：直接使用 GeneralBacktest
+bt = GeneralBacktest(start_date, end_date)
+results = bt.run_backtest(weights_data, price_data, buy_price, sell_price, ...)
+bt.plot_dashboard()
 ```
 
 **主要函数**:
-- `run_backtest(predictions: pd.DataFrame=None, **cfg) -> Dict`
+- `GeneralBacktest.run_backtest(weights_data, price_data, buy_price, sell_price, ...) -> Dict`
+- `GeneralBacktest.plot_dashboard() / plot_nav_curve() / plot_monthly_returns_heatmap() / ...`
+- `GeneralBacktestAdapter.run(factor_df, price_df, factor_col, weight_mode, ...) -> Dict`
+- `PortfolioBuilder.generate_weights(factor_df, factor_col, mode) -> pd.DataFrame`
 - `FactorGenerator.generate_factors(df: pd.DataFrame) -> pd.DataFrame`
 - `ICAnalyzer.calculate_ic(df: pd.DataFrame) -> pd.DataFrame`
-- `PerformanceEvaluator.evaluate_portfolio(df: pd.DataFrame, cost: float=0.0) -> Dict`
 
 ---
 
@@ -539,6 +561,7 @@ with R.start(experiment_name, recorder_name, resume=False, **params):
 
 | 日期 | 变更 | 影响模块 |
 |------|------|----------|
+| 2026-02-09 | GeneralBacktest 内嵌迁移（REQ-007）：内嵌 GeneralBacktest 引擎至 `backtest/general_backtest/`，移除旧回测引擎（backtest_system/runner/evaluator/visualizer/multi_factor_backtest），`GeneralBacktestAdapter` 为主入口 | backtest/ |
 | 2026-01-05 | 初始化系统级架构文档，梳理数据获取→预处理→数据集→建模→回测→实验追踪全链路 | config/, data_fetch/, data_processor/, data_set/, model/, workflow/, backtest/, factor_hub/, data_monitor/ |
 | 2026-01-05 | 按最新 architecture-sync skill 补充核心模块 Schema、核心逻辑代码块、函数签名与修改指南 | ARCHITECTURE.md |
 | 2026-01-05 | 更新 `data_processor/` 架构：补充模块结构图、输入/输出 Schema、核心逻辑与主要函数，保持与实现同步 | data_processor/ |

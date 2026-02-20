@@ -157,6 +157,23 @@ class BacktestConfig(BaseConfig):
     rolling_window: int = 60
     
     # =====================================================================
+    # 回测引擎配置
+    # =====================================================================
+    # 回测引擎: 'general_backtest' (GeneralBacktest, 内嵌)
+    engine: str = 'general_backtest'
+    # 买入价格字段 (仅 general_backtest 引擎使用): 'open', 'close'
+    buy_price: str = 'open'
+    # 卖出价格字段 (仅 general_backtest 引擎使用): 'open', 'close'
+    sell_price: str = 'close'
+    # GeneralBacktest 引擎专用配置
+    general_backtest_options: Dict[str, Any] = field(default_factory=lambda: {
+        'rebalance_threshold': 0.005,   # 调仓阈值
+        'initial_capital': 1.0,         # 初始资金
+        'adj_factor_col': 'adj_factor', # 复权因子列名
+        'close_price_col': 'close',     # 收盘价列名
+    })
+
+    # =====================================================================
     # 交易成本配置
     # =====================================================================
     # 是否考虑交易成本
@@ -230,6 +247,12 @@ class BacktestConfig(BaseConfig):
             "weight_method必须是'equal', 'value_weight'或'factor_weight'"
         assert self.ic_method in ['pearson', 'spearman'], \
             "ic_method必须是'pearson'或'spearman'"
+        assert self.engine in ['general_backtest'], \
+            "engine 仅支持 'general_backtest'"
+        assert self.buy_price in ['open', 'close'], \
+            "buy_price必须是'open'或'close'"
+        assert self.sell_price in ['open', 'close'], \
+            "sell_price必须是'open'或'close'"
         
         # 验证基准指数配置
         if self.benchmark_index is not None:
